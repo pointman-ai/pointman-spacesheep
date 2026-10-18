@@ -1,0 +1,23 @@
+# Spacesheep: a behaviour. Its CLI is how Spacesheep prefers to be installed, so agents publish with
+# `npx -y spacesheep@latest`, signed in once per machine (~/.config/spacesheep), not through an MCP server.
+# Installed on a node, it goes into every run there, with its rules in each run's allowed tools.
+
+[extension]
+id = "spacesheep"
+name = "Spacesheep"
+version = "0.2.1"
+publisher = "aurelio"
+summary = "Publish pages and sites to Spacesheep from any agent, with its CLI."
+
+[behavior]
+skill = "SKILL.md"
+
+[permissions]
+rules = ["Bash(spacesheep:*)", "Bash(npx -y spacesheep@latest:*)"]
+
+# A page's link in a post is a pill in the apps while the workspace runs Spacesheep. Core doesn't look
+# pages up, so its title is the page's name in the link.
+[[links]]
+kind = "page"
+match = "https://spacesheep.dev/@{owner}/{space}"
+show = ["title"]
