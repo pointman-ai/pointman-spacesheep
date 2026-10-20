@@ -1,19 +1,47 @@
-# Spacesheep: a behaviour. Its CLI is how Spacesheep prefers to be installed, so agents publish with
-# `npx -y spacesheep@latest`, signed in once per machine (~/.config/spacesheep), not through an MCP server.
-# Installed on a node, it goes into every run there, with its rules in each run's allowed tools.
+# Spacesheep: a behaviour, and Talk through the node. Its CLI is how Spacesheep prefers to be installed, so agents
+# publish with `npx -y spacesheep@latest`, signed in once per machine (~/.config/spacesheep), not through an MCP
+# server. Installed on a node, the behaviour goes into every run there, with its rules in each run's allowed tools.
+#
+# Talk (Pointman thread 6914; the spec: https://spacesheep.dev/@james/spacesheep-talk-through-the-pointman-node): a
+# page's Session tab on spacesheep.dev messages the agent session that published it. With `talk` on, the process
+# runs `spacesheep talk listen --session <id>` for each agent whose wake.toml has `spacesheep_talk = true`, and
+# posts each message in the agent's thread, which wakes it. The agent answers there, and on the page with
+# `spacesheep talk reply`. Nothing changes on Spacesheep's side, and nothing goes into ~/.claude.
 
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.2.1"
+version = "0.3.0"
 publisher = "aurelio"
-summary = "Publish pages and sites to Spacesheep from any agent, with its CLI."
+summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
+node = ">=0.1,<1"
+platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64", "linux-arm64"]
+
+[run]
+command = ["bin/spacesheep"]
+runtime = "binary"
 
 [behavior]
 skill = "SKILL.md"
 
 [permissions]
 rules = ["Bash(spacesheep:*)", "Bash(npx -y spacesheep@latest:*)"]
+network = true                   # spacesheep.dev, through its CLI
+agents = true                    # agents.sessions: each agent's session, thread and Talk switch
+post = true                      # board.post: each message, as a post in the agent's thread
+
+[settings]
+type = "object"
+
+[settings.properties.talk]
+type = "boolean"
+title = "Talk from pages"
+description = "Messages from a page's Session tab on spacesheep.dev reach the agent that published it, as a post in its thread. Only agents with spacesheep_talk = true in wake.toml."
+default = false
+
+[[events]]
+name = "spacesheep.talk"
+description = "Talk on or off on this node, the agents listened for, and when the last message came."
 
 # A page's link in a post is a pill in the apps while the workspace runs Spacesheep. Core doesn't look
 # pages up, so its title is the page's name in the link.
