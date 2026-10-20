@@ -6,6 +6,7 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -147,8 +148,8 @@ pub fn alive(pid: i32) -> bool {
 }
 
 /// An agent as `agents.sessions` gives it.
-pub fn agent(handle: &str, session: &str, thread: i64, talk: bool) -> Value {
-    json!({"handle": handle, "client": "claude", "session_id": session, "thread_id": thread, "talk": talk})
+pub fn agent(handle: &str, session: &str, thread: i64) -> Value {
+    json!({"handle": handle, "client": "claude", "session_id": session, "thread_id": thread})
 }
 
 /// The node's side: the agents it says, and each post made.
@@ -156,6 +157,8 @@ pub fn agent(handle: &str, session: &str, thread: i64, talk: bool) -> Value {
 pub struct Board {
     pub agents: Arc<Mutex<Vec<Value>>>,
     pub posts: Arc<Mutex<Vec<Value>>>,
+    /// How long the next `agents.sessions` takes to answer, in ms.
+    pub slow: Arc<AtomicU64>,
 }
 
 impl Board {
@@ -163,6 +166,11 @@ impl Board {
         let b = Board::default();
         *b.agents.lock().unwrap() = agents;
         b
+    }
+
+    /// The next `agents.sessions` answers after this.
+    pub fn slow_next(&self, d: Duration) {
+        self.slow.store(d.as_millis() as u64, Ordering::SeqCst);
     }
 
     pub fn set_agents(&self, agents: Vec<Value>) {
@@ -186,20 +194,23 @@ impl Board {
     }
 }
 
-/// The extension under a stand-in node, with the fake CLI and these settings.
+/// The extension under a stand-in node, with the fake CLI and these settings (Talk on for @scene: `on()`).
 pub fn spacesheep(fake: &Fake, board: &Board, settings: Value) -> StandIn {
     spacesheep_on(&fake.path_var(), board, settings)
 }
 
 /// The extension under a stand-in node, with this PATH.
 pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn {
-    let (agents, posts) = (board.agents.clone(), board.posts.clone());
+    let (agents, posts, slow) = (board.agents.clone(), board.posts.clone(), board.slow.clone());
     StandIn::new(ROOT)
         .binary(env!("CARGO_BIN_EXE_spacesheep"))
         .settings(settings)
         .env("PATH", path_var)
         .env("POINTMAN_SPACESHEEP_FASTER", FASTER)
-        .method("agents.sessions", move |_| Ok(json!({"agents": *agents.lock().unwrap()})))
+        .method("agents.sessions", move |_| {
+            std::thread::sleep(Duration::from_millis(slow.swap(0, Ordering::SeqCst)));
+            Ok(json!({"agents": *agents.lock().unwrap()}))
+        })
         .method("board.post", move |params: Value| {
             let mut posts = posts.lock().unwrap();
             posts.push(params);
@@ -207,8 +218,9 @@ pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn 
         })
 }
 
+/// Talk on for @scene.
 pub fn on() -> Value {
-    json!({"talk": true})
+    json!({"agents": ["scene"]})
 }
 
 /// Waits until `test` passes; whether it did.

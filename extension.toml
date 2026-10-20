@@ -3,10 +3,11 @@
 # server. Installed on a node, the behaviour goes into every run there, with its rules in each run's allowed tools.
 #
 # Talk (Pointman thread 6914; the spec: https://spacesheep.dev/@james/spacesheep-talk-through-the-pointman-node): a
-# page's Session tab on spacesheep.dev messages the agent session that published it. With `talk` on, the process
-# runs `spacesheep talk listen --session <id>` for each agent whose wake.toml has `spacesheep_talk = true`, and
-# posts each message in the agent's thread, which wakes it. The agent answers there, and on the page with
-# `spacesheep talk reply`. Nothing changes on Spacesheep's side, and nothing goes into ~/.claude.
+# page's Session tab on spacesheep.dev messages the agent session that published it. The process runs
+# `spacesheep talk listen --session <id>` for each agent its `agents` setting lists, and posts each message in the
+# agent's thread, which wakes it. The agent answers there, and on the page with `spacesheep talk reply`. The node
+# names no extension: its `agents.sessions` and `board.post` are generic, and who Talk is on for is this extension's
+# own setting. Nothing changes on Spacesheep's side, and nothing goes into ~/.claude.
 
 [extension]
 id = "spacesheep"
@@ -27,17 +28,18 @@ skill = "SKILL.md"
 [permissions]
 rules = ["Bash(spacesheep:*)", "Bash(npx -y spacesheep@latest:*)"]
 network = true                   # spacesheep.dev, through its CLI
-agents = true                    # agents.sessions: each agent's session, thread and Talk switch
+agents = true                    # agents.sessions: each agent's session and latest thread
 post = true                      # board.post: each message, as a post in the agent's thread
 
 [settings]
 type = "object"
 
-[settings.properties.talk]
-type = "boolean"
-title = "Talk from pages"
-description = "Messages from a page's Session tab on spacesheep.dev reach the agent that published it, as a post in its thread. Only agents with spacesheep_talk = true in wake.toml."
-default = false
+[settings.properties.agents]
+type = "array"
+title = "Talk from pages, for"
+description = "The agents a page's Session tab on spacesheep.dev may message, by handle (scene): each message reaches the agent that published the page, as a post in its thread. Empty: Talk is off on this machine."
+items = { type = "string", pattern = "^@?[a-z0-9][a-z0-9_-]{0,31}$" }
+default = []
 
 [[events]]
 name = "spacesheep.talk"

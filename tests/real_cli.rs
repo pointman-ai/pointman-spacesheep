@@ -16,7 +16,7 @@ fn the_real_cli_on_a_machine_not_signed_in_says_so_in_health() {
         return;
     };
     let home = tempfile::tempdir().unwrap();
-    let board = Board::with(vec![agent("scene", "s-1", 41, true)]);
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
     let path_var = format!("{}:/usr/bin:/bin", npx.to_string_lossy());
     let node = spacesheep_on(&path_var, &board, on()).env("HOME", home.path()).start().unwrap();
 
