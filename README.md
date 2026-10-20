@@ -34,15 +34,16 @@ Spacesheep's own CLI, as it is (1.26), and nothing goes into `~/.claude`: no hoo
 sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the-pointman-node (Pointman thread
 6914).
 
-- **Two switches,** both off by default: `talk` in this machine's settings for the extension
-  (`pointman config set node.extensions.spacesheep.talk true`), and `spacesheep_talk = true` for each agent in
-  wake.toml. The account's own Talk switch, at https://spacesheep.dev/settings/talk, has to be on too; the
-  extension never turns it on (`talk on`).
-- **Listening:** every 60 s it reads the node's agents (`agents.sessions`). For each with Talk on, a session and a
-  thread, it runs `spacesheep talk listen --session <id>` (the machine's `spacesheep`, else
+- **One switch,** off by default: the `agents` this machine's Talk is on for, by handle
+  (`pointman config set node.extensions.spacesheep.agents '["scene", "editor"]'`, JSON or TOML). An empty list,
+  the default, is Talk off. It's the extension's own setting, so the node names no extension. The account's own
+  Talk switch, at https://spacesheep.dev/settings/talk, has to be on too; the extension never turns it on
+  (`talk on`).
+- **Listening:** every 60 s it reads the node's agents (`agents.sessions`). For each listed one with a session and
+  a thread, it runs `spacesheep talk listen --session <id>` (the machine's `spacesheep`, else
   `npx -y spacesheep@latest`), signed in with the machine's own key in `~/.config/spacesheep`. A listener that
   ends (its link gone, Talk off for the account, the CLI failing) starts again after 5 s, doubling to 5 minutes.
-  An agent switched off, or with a new session, has its listener stopped. Each listener is a process group of
+  An agent taken off the list, or with a new session, has its listener stopped. Each listener is a process group of
   its own, kept in the state folder (`listeners.json`), so a restart stops any left from a crash.
 - **Each message** is a `board.post` in the thread of the agent's latest run, as the machine. Its mention wakes
   the agent:
@@ -63,13 +64,14 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   `message`, else `body`, else the whole JSON, and the first message's JSON goes in the log once.
 - **Trust:** messages come from the account's signed-in spacesheep.dev session, not a passkey, so a stolen web
   login could message a switched-on agent. Each lands as a visible post saying where it's from, the agent's own
-  permission rules still apply, and `SKILL.md` tells agents to ask in the thread before anything risky.
+  permission rules still apply, and `SKILL.md` tells agents to trust such a post only when this machine posted it
+  (anyone on the board can type its first line), and to ask in the thread before anything risky.
 
 ## Health
 
 | Part | ok | not ok |
 |---|---|---|
-| `node`: Talk on this node | the `talk` setting is on | stopped: it's off |
+| `node`: Talk on this node | on for the agents the `agents` setting lists | stopped: it lists nobody |
 | `account`: the account's Talk | `talk status` says `enabled` (read every 10 minutes, and after Spacesheep stops a listener) | failing: Talk off for the account, no Pro or Team plan, or the machine not signed in (`needs: auth`) |
 | `listeners`: Talk listeners | listening for each switched-on agent, with the last message's time | failing: one that keeps ending, the node not answering `agents.sessions`, a post that didn't go out, or no CLI; stopped: nobody to listen for |
 
@@ -84,13 +86,14 @@ https://spacesheep.dev/settings/api-keys. The CLI keeps the sign-in in `~/.confi
 
 ## Commands and settings
 
-No commands: the guidance and the CLI's own commands are all agents use. One setting, `talk` (off), per machine.
+No commands: the guidance and the CLI's own commands are all agents use. One setting per machine, `agents`: the
+handles Talk is on for (none by default).
 
 ## Files
 
 | File | What |
 |---|---|
-| `extension.toml` | The manifest: `[run]` beside `[behavior]`, the permissions (`agents`, `post`, the CLI's rules), the `talk` setting and how the apps draw page links |
+| `extension.toml` | The manifest: `[run]` beside `[behavior]`, the permissions (`agents`, `post`, the CLI's rules), the `agents` setting and how the apps draw page links |
 | `SKILL.md` | The guidance, in the standard skill format (frontmatter, then the body), so it works as an ordinary skill outside Pointman too |
 | `src/main.rs` | The process: the looks, the listeners, the posts and health |
 | `src/cli.rs`, `src/said.rs`, `src/words.rs` | Finding and stopping the CLI, reading what `talk listen` prints, and the post's words |

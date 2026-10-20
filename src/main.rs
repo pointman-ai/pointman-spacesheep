@@ -2,8 +2,8 @@
 //! it over stdin and stdout (the SDK handles that). Log with `h.log(…)`: stdout is the node's.
 //!
 //! Every second on the `talk` lane it checks whether a look is due: every 60 s, and at once after the settings
-//! change. A look, while the `talk` setting is on: the node's `agents.sessions`, then a listener for each agent
-//! whose Talk is on (wake.toml's `spacesheep_talk`) with a session and a thread, and none for the rest. A listener
+//! change. A look, while the `agents` setting lists anyone: the node's `agents.sessions`, then a listener for each
+//! listed agent with a session and a thread, and none for the rest. A listener
 //! is a thread running `spacesheep talk listen --session <id>`, started again with a growing wait whenever it ends.
 //! Each message goes out as a `board.post` in the agent's thread, in order, from a thread of their own. The
 //! listeners' process groups are kept in the state folder, so a restart stops any left behind.
@@ -69,21 +69,35 @@ struct Agent {
     thread: i64,
 }
 
-/// The agents to listen for, from `agents.sessions`, one per session; and why the others with Talk on aren't.
-fn wanted(answer: &Value) -> (Vec<Agent>, Vec<String>) {
-    let (mut agents, mut waiting) = (Vec::<Agent>::new(), Vec::new());
-    for a in answer["agents"].as_array().into_iter().flatten() {
-        if a["talk"] != true {
-            continue;
+/// The agents Talk is on for: the `agents` setting's handles (`@` or not), each once. None: Talk is off.
+fn listed(settings: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for h in settings["agents"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        let h = h.trim().trim_start_matches('@').to_lowercase();
+        if words::handle_ok(&h) && !out.contains(&h) {
+            out.push(h);
         }
-        let handle = a["handle"].as_str().unwrap_or("").trim_start_matches('@').to_string();
+    }
+    out
+}
+
+/// The listed agents to listen for, from `agents.sessions`, one per session; and why the others aren't.
+fn wanted(answer: &Value, listed: &[String]) -> (Vec<Agent>, Vec<String>) {
+    let (mut agents, mut waiting) = (Vec::<Agent>::new(), Vec::new());
+    let here: Vec<&Value> = answer["agents"].as_array().into_iter().flatten().collect();
+    for handle in listed {
+        let Some(a) = here.iter().find(|a| a["handle"].as_str().map(|h| h.trim_start_matches('@')) == Some(handle))
+        else {
+            waiting.push(format!("@{handle} isn't one of this node's agents, or hasn't run here yet"));
+            continue;
+        };
+        let handle = handle.clone();
         let session = a["session_id"].as_str().unwrap_or("");
         let thread = a["thread_id"].as_i64().filter(|t| *t > 0);
-        let why = match (words::handle_ok(&handle), session, thread) {
-            (false, _, _) => Some(format!("{:?} isn't a handle", a["handle"])),
-            (_, "", _) => Some(format!("@{handle} has no session yet")),
-            (_, s, _) if !session_ok(s) => Some(format!("@{handle}'s session id {s:?} isn't one Spacesheep takes")),
-            (_, _, None) => Some(format!("@{handle} has no thread yet")),
+        let why = match (session, thread) {
+            ("", _) => Some(format!("@{handle} has no session yet")),
+            (s, _) if !session_ok(s) => Some(format!("@{handle}'s session id {s:?} isn't one Spacesheep takes")),
+            (_, None) => Some(format!("@{handle} has no thread yet")),
             _ if agents.iter().any(|x| x.session == session) => Some(format!("@{handle} shares a session")),
             _ => None,
         };
@@ -146,7 +160,8 @@ struct Listening {
 #[derive(Debug, Clone, Default)]
 struct Status {
     looked: bool,
-    on: bool,
+    /// The `agents` setting's handles: Talk is on while there's one.
+    listed: Vec<String>,
     cli: Option<String>,
     problem: Option<String>,
     listeners: BTreeMap<String, Listening>,
@@ -384,6 +399,9 @@ struct Talk {
     groups: Option<Arc<Groups>>,
     checking: Arc<AtomicBool>,
     checked: Option<Instant>,
+    /// The settings changed: look at the next tick, and read the account's switch again. An atomic, since it's set
+    /// on the thread that reads the node's answers, which a look waits on.
+    look_now: Arc<AtomicBool>,
 }
 
 impl Talk {
@@ -404,14 +422,18 @@ impl Talk {
         let groups = self.groups();
         self.event();
         let started = Instant::now();
+        if self.look_now.swap(false, Ordering::SeqCst) {
+            self.next = started;
+            self.checked = None;
+        }
         if started < self.next {
             return;
         }
         self.next = started + scaled(EVERY);
-        let on = self.h.settings()["talk"] == true;
-        lock(&self.status).on = on;
-        if on {
-            self.look(groups);
+        let listed = listed(&self.h.settings());
+        lock(&self.status).listed = listed.clone();
+        if !listed.is_empty() {
+            self.look(groups, &listed);
         } else {
             self.stop_all();
             let mut st = lock(&self.status);
@@ -422,7 +444,7 @@ impl Talk {
         self.event();
     }
 
-    fn look(&mut self, groups: Arc<Groups>) {
+    fn look(&mut self, groups: Arc<Groups>, listed: &[String]) {
         let own = std::env::current_exe().ok();
         let places: Vec<PathBuf> = cli::PLACES.iter().map(PathBuf::from).collect();
         let Some(cli) = cli::find(std::env::var_os("PATH").as_deref(), &places, own.as_deref()) else {
@@ -447,7 +469,7 @@ impl Talk {
                 return;
             }
         };
-        let (agents, waiting) = wanted(&answer);
+        let (agents, waiting) = wanted(&answer, listed);
         {
             let mut st = lock(&self.status);
             st.problem = None;
@@ -531,32 +553,34 @@ impl Talk {
         let listening: Vec<&str> = st.listeners.values().filter(|l| l.running).map(|l| l.handle.as_str()).collect();
         self.h.event(
             "spacesheep.talk",
-            json!({"on": st.on, "listening": listening, "last_message_at": st.last.as_ref().map(|l| l.0)}),
+            json!({"on": !st.listed.is_empty(), "agents": st.listed, "listening": listening, "last_message_at": st.last.as_ref().map(|l| l.0)}),
         );
     }
 }
 
-const SETTING: &str =
-    "`pointman config set node.extensions.spacesheep.talk true` on this machine (or its settings in the app)";
+const SETTING: &str = "`pointman config set node.extensions.spacesheep.agents '[\"scene\"]'` on this machine (or \
+                       its settings in the app), with the handles of the agents a page may message";
 
 /// The parts health shows: the node's switch, the account's, and the listeners.
 fn health(st: &Status) -> Value {
     let part = |id: &str, kind: &str, name: &str, state: &str, needs: Vec<&str>, why: String| json!({"id": id, "kind": kind, "name": name, "state": state, "needs": needs, "why": why});
-    let switch = match st.on {
-        true => part(
+    let on = !st.listed.is_empty();
+    let switch = match on {
+        true => {
+            let who: Vec<String> = st.listed.iter().map(|h| format!("@{h}")).collect();
+            part("node", "switch", "Talk on this node", "ok", vec![], format!("on for {}", who.join(", ")))
+        }
+        false => part(
             "node",
             "switch",
             "Talk on this node",
-            "ok",
+            "stopped",
             vec![],
-            "on: agents with spacesheep_talk = true in wake.toml are listened for".into(),
+            format!("off: no agent is listed. Turn it on with {SETTING}"),
         ),
-        false => {
-            part("node", "switch", "Talk on this node", "stopped", vec![], format!("off: turn it on with {SETTING}"))
-        }
     };
     let when = st.account_at.map(|at| format!(" (checked at {})", clock(at))).unwrap_or_default();
-    let (state, needs, why) = match (&st.account, st.on) {
+    let (state, needs, why) = match (&st.account, on) {
         (_, false) => ("unknown", vec![], "not checked while Talk is off on this node".to_string()),
         (Account::Unknown, _) => ("unknown", vec![], "not checked yet".to_string()),
         (Account::On, _) => ("ok", vec![], format!("Talk is on for the account{when}")),
@@ -583,7 +607,7 @@ fn health(st: &Status) -> Value {
         Some((at, handle)) => format!("; the last message was at {} for @{handle}", clock(*at)),
         None => "; no message yet".into(),
     };
-    let (state, why) = if !st.on {
+    let (state, why) = if !on {
         ("stopped", "off on this node".to_string())
     } else if let Some(problem) = &st.problem {
         ("failing", problem.clone())
@@ -605,7 +629,7 @@ fn health(st: &Status) -> Value {
     } else if !st.waiting.is_empty() {
         ("stopped", format!("nobody to listen for: {}", st.waiting.join("; ")))
     } else {
-        ("stopped", "no agent here has spacesheep_talk = true in wake.toml".into())
+        ("stopped", "nobody to listen for".into())
     };
     let listeners = part("listeners", "listener", "Talk listeners", state, vec![], why);
     json!([switch, account, listeners])
@@ -617,6 +641,7 @@ fn main() -> anyhow::Result<()> {
     let status = Arc::new(Mutex::new(Status::default()));
     let posts = poster(h.clone(), status.clone());
     let lines = Lines::default();
+    let look_now = Arc::new(AtomicBool::new(false));
     let talk = Arc::new(Mutex::new(Talk {
         h: h.clone(),
         next: Instant::now(),
@@ -626,19 +651,15 @@ fn main() -> anyhow::Result<()> {
         groups: None,
         checking: Arc::new(AtomicBool::new(false)),
         checked: None,
+        look_now: look_now.clone(),
     }));
 
     let t = talk.clone();
     ext.every(TICK, move |_: &Handle| lock(&t).tick(), "talk");
 
-    // the settings changed (the node may start it again instead): look at once, on the lane, since this runs on
-    // the thread that reads the node's answers
-    let t = talk.clone();
-    ext.on_settings(move |_: &Handle| {
-        let mut talk = lock(&t);
-        talk.next = Instant::now();
-        talk.checked = None;
-    });
+    // the settings changed (the node may start it again instead): look at the next tick. Never the Talk lock here:
+    // this runs on the thread that reads the node's answers, and a look holds that lock while it waits for one
+    ext.on_settings(move |_: &Handle| look_now.store(true, Ordering::SeqCst));
 
     let st = status.clone();
     ext.method("health.check", move |_| Ok(health(&lock(&st))));
@@ -679,22 +700,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_agents_with_talk_on_a_session_and_a_thread_are_listened_for() {
+    fn only_listed_agents_with_a_session_and_a_thread_are_listened_for() {
         let answer = json!({"agents": [
-            {"handle": "scene", "client": "claude", "session_id": "s-1", "thread_id": 5, "talk": true},
-            {"handle": "quiet", "client": "claude", "session_id": "s-2", "thread_id": 6, "talk": false},
-            {"handle": "fresh", "client": "claude", "session_id": null, "thread_id": 7, "talk": true},
-            {"handle": "nowhere", "client": "claude", "session_id": "s-4", "thread_id": null, "talk": true},
-            {"handle": "odd", "client": "claude", "session_id": "s 5", "thread_id": 8, "talk": true},
-            {"handle": "twin", "client": "claude", "session_id": "s-1", "thread_id": 9, "talk": true},
+            {"handle": "scene", "client": "claude", "session_id": "s-1", "thread_id": 5},
+            {"handle": "quiet", "client": "claude", "session_id": "s-2", "thread_id": 6},
+            {"handle": "fresh", "client": "claude", "session_id": null, "thread_id": 7},
+            {"handle": "nowhere", "client": "claude", "session_id": "s-4", "thread_id": null},
+            {"handle": "odd", "client": "claude", "session_id": "s 5", "thread_id": 8},
+            {"handle": "twin", "client": "claude", "session_id": "s-1", "thread_id": 9},
         ]});
-        let (agents, waiting) = wanted(&answer);
-        assert_eq!(agents, [Agent { handle: "scene".into(), session: "s-1".into(), thread: 5 }]);
-        assert_eq!(waiting.len(), 4, "{waiting:?}");
-        assert!(
-            waiting[0].contains("@fresh has no session") && waiting[1].contains("@nowhere has no thread"),
-            "{waiting:?}"
+        let settings =
+            json!({"agents": ["scene", "@Fresh", "nowhere", "odd", "twin", "ghost", "scene", "not a handle"]});
+        let names = listed(&settings);
+        assert_eq!(names, ["scene", "fresh", "nowhere", "odd", "twin", "ghost"]);
+        let (agents, waiting) = wanted(&answer, &names);
+        assert_eq!(agents, [Agent { handle: "scene".into(), session: "s-1".into(), thread: 5 }], "not quiet: unlisted");
+        assert_eq!(
+            waiting,
+            [
+                "@fresh has no session yet",
+                "@nowhere has no thread yet",
+                "@odd's session id \"s 5\" isn't one Spacesheep takes",
+                "@twin shares a session",
+                "@ghost isn't one of this node's agents, or hasn't run here yet",
+            ]
         );
+        assert!(listed(&json!({})).is_empty() && listed(&json!({"agents": []})).is_empty(), "off by default");
     }
 
     #[test]
