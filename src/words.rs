@@ -25,12 +25,17 @@ pub fn fence(text: &str) -> String {
 }
 
 /// The agents a message calls by starting with their handles (`@editor cut the intro`, `@editor, @scene: …`), each
-/// once, lowercased. A handle later in the message calls nobody, and neither does one that isn't addressing
-/// (`@editor's cut`).
+/// once, lowercased. `@pm.editor` calls @editor too: in a page's comments a bare `@editor` would also be a mention of
+/// a Spacesheep user called editor (James, Pointman thread 6914 [16565]). A handle later in the message calls nobody,
+/// and neither does one that isn't addressing (`@editor's cut`).
 pub fn called(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut rest = text.trim_start();
     while let Some(after) = rest.strip_prefix('@') {
+        let after = match after.get(..3) {
+            Some(p) if p.eq_ignore_ascii_case("pm.") => &after[3..],
+            _ => after,
+        };
         let end = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).unwrap_or(after.len());
         let (name, tail) = after.split_at(end);
         let name = name.to_ascii_lowercase();
@@ -116,6 +121,9 @@ mod tests {
         assert_eq!(called("@editor cut the intro"), ["editor"]);
         assert_eq!(called("  @Editor, @scene: both of you, and @james later"), ["editor", "scene"]);
         assert_eq!(called("@editor @editor again"), ["editor"]);
+        assert_eq!(called("@pm.editor, @PM.scene and @pm.editor cut it"), ["editor", "scene"], "Pointman's prefix");
+        assert!(called("@pm. cut it").is_empty(), "the prefix alone calls nobody");
+        assert_eq!(called("@pm hi"), ["pm"], "an agent called pm is still called");
         assert!(called("hey @editor").is_empty(), "only at the start");
         assert!(called("@editor's cut is long").is_empty(), "not addressing");
         assert!(called("@-x hi").is_empty() && called("@ hi").is_empty() && called("").is_empty());

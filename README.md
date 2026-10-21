@@ -66,8 +66,12 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   The words are in a code fence longer than any run of backticks in them, so a mention inside wakes nobody (the
   board reads no mention in code). The reply names the session listened for, which is the page's, whatever
   session the agent wakes in.
-- **Calling an agent:** a message that starts with handles (`@editor cut the intro`, `@editor, @scene: …`) is for
-  those agents instead, any agent on the board, in the same thread: "@editor from spacesheep.dev (Session tab of
+- **Comments:** a comment on a page that mentions `@session` is Spacesheep's own way to ask the session that made
+  the page: it arrives as a Talk message, and the agent's `talk reply` is posted under the comment. Only the page's
+  owner can ask (Spacesheep's rule), so someone else's comment can't wake an agent. No sign-in beyond the machine's.
+- **Calling an agent:** a message that starts with handles (`@editor cut the intro`, `@editor, @scene: …`, or
+  `@pm.editor`) is for those agents instead, any agent on the board, in the same thread. In a comment write
+  `@session @pm.editor …`: a bare `@editor` there is also a mention of a Spacesheep user called editor. Then: "@editor from spacesheep.dev (Session tab of
   `@scene`'s page, not signed):", the publisher in code so naming it doesn't wake it too. Its reply line still names the page's session, so @editor's answer shows on
   @scene's page. A handle later in the message stays in the fence. Spacesheep doesn't document the message's JSON: its words are `text`, else
   `message`, else `body`, else the whole JSON, and the first message's JSON goes in the log once.

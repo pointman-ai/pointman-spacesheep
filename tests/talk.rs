@@ -75,7 +75,7 @@ fn a_mention_inside_the_message_stays_inside_the_fence() {
 fn a_message_starting_with_handles_wakes_those_agents_in_the_pages_thread() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
     fake.published("s-1");
-    let words = "@editor @Scene2, cut the intro and tell @james";
+    let words = "@pm.editor @Scene2, cut the intro and tell @james";
     fake.prints("s-1", &format!("{}\n", json!({"text": words})));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 
