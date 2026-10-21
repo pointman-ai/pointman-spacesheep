@@ -21,7 +21,8 @@ pointman add spacesheep
   the thread (`open_pane`), and its link goes in the thread.
 - **Pages for tasks:** a page for Pointman tasks starts its title with their refs (`AGC-16 · …`, or the project's
   key for several: `AGC · …`), links each task near the top (`pointman://item/AGC-16`, which opens it in the app), and
-  is added to each task's `links`, so the task shows it.
+  is added to each task's links with `links_add` (core release 19), which keeps the task's other links, so the task
+  shows it.
 - **The CLI:** agents publish with `npx -y spacesheep@latest` (or `spacesheep` where it's installed): `deploy`
   for a new page or a new version of one, `read`, `list`, `share` and `whoami`. The extension's permission
   rules go into each run's allowed tools, so agents use the CLI without a prompt:
@@ -66,6 +67,11 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   The words are in a code fence longer than any run of backticks in them, so a mention inside wakes nobody (the
   board reads no mention in code). The reply names the session listened for, which is the page's, whatever
   session the agent wakes in.
+- **Pages whose agent has finished** (despawned, or moved on to a new session): the extension remembers each
+  agent's session and thread (`agents.json` in the state folder) and keeps listening on the 10 such pages changed
+  most recently. A message there that calls agents reaches them, in the page's remembered thread or else their own;
+  one that calls nobody gets a reply on the page saying the agent has finished and how to ask another.
+- **The header says where it was written:** Spacesheep's `asked_in`, "a comment on the page", else the Session tab.
 - **Comments:** a comment on a page that mentions `@session` is Spacesheep's own way to ask the session that made
   the page: it arrives as a Talk message, and the agent's `talk reply` is posted under the comment. Only the page's
   owner can ask (Spacesheep's rule), so someone else's comment can't wake an agent. No sign-in beyond the machine's.

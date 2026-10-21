@@ -10,7 +10,7 @@
 //! publisher, in order, from a thread of their own. The listeners' process groups are kept in the state folder, so
 //! a restart stops any left behind.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::Child;
@@ -23,7 +23,7 @@ use pointman_extension::{Extension, Handle};
 use serde_json::{json, Value};
 use spacesheep::cli::{self, Cli};
 use spacesheep::pages::{self, Known};
-use spacesheep::said::{Reader, Said};
+use spacesheep::said::{self, Reader, Said};
 use spacesheep::words::{self, clock, now};
 
 /// How often a look is checked for.
@@ -34,6 +34,11 @@ const EVERY: Duration = Duration::from_secs(60);
 /// on the listeners start. And how long it may take: npx's first run fetches the CLI.
 const STATUS_EVERY: Duration = Duration::from_secs(60);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(90);
+/// The pages of agents that have finished (despawned, or moved on to a new session) listened on, at most: the
+/// pages changed most recently. Each listener is a process.
+const GONE_PAGES: usize = 10;
+/// How long a reply on a page may take.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often the pages are read for who published them, and how long each read may take.
 const PAGES_EVERY: Duration = Duration::from_secs(300);
 const PAGES_TIMEOUT: Duration = Duration::from_secs(60);
@@ -70,19 +75,63 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// An agent to listen for: its handle, its session, and the thread of its latest run (where messages go).
 #[derive(Debug, Clone, PartialEq)]
 struct Agent {
+    /// Empty when the page's agent has finished and its name isn't remembered.
     handle: String,
     session: String,
+    /// 0 when the page's agent has finished and its thread isn't remembered.
     thread: i64,
+    /// The page's agent has finished: its session runs nowhere, so only an agent the message calls can answer.
+    gone: bool,
 }
 
-/// The agents to listen for, from `agents.sessions`: each whose session published a page, once per session; why a
-/// publisher isn't; and how many agents here haven't published one in their current session.
-fn wanted(answer: &Value, publishers: &BTreeSet<String>) -> (Vec<Agent>, Vec<String>, usize) {
+/// What's remembered of each session an agent here has had: its handle and latest thread, kept in the state folder
+/// (agents.json), so a page still has a name and a thread after its agent has gone.
+type Remembered = BTreeMap<String, (String, i64)>;
+
+fn remembered_from(text: &str) -> Remembered {
+    let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    let rows =
+        v.as_object().into_iter().flatten().filter_map(|(s, a)| {
+            Some((s.clone(), (a["handle"].as_str()?.to_string(), a["thread"].as_i64().unwrap_or(0))))
+        });
+    rows.collect()
+}
+
+fn remembered_json(r: &Remembered) -> String {
+    let m: serde_json::Map<String, Value> =
+        r.iter().map(|(s, (h, t))| (s.clone(), json!({"handle": h, "thread": t}))).collect();
+    Value::Object(m).to_string()
+}
+
+/// Each agent here with a session and a thread, as `agents.sessions` gives them, into what's remembered.
+fn remember(r: &mut Remembered, answer: &Value) -> bool {
+    let mut changed = false;
+    for a in answer["agents"].as_array().into_iter().flatten() {
+        let handle = a["handle"].as_str().unwrap_or("").trim_start_matches('@');
+        let (Some(session), Some(thread)) = (a["session_id"].as_str(), a["thread_id"].as_i64().filter(|t| *t > 0))
+        else {
+            continue;
+        };
+        if words::handle_ok(handle) && session_ok(session) && r.get(session) != Some(&(handle.to_string(), thread)) {
+            r.insert(session.to_string(), (handle.to_string(), thread));
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// The sessions to listen for: each agent here whose current session published a page, from `agents.sessions`;
+/// then the pages whose agent has finished, the most recently changed first, up to GONE_PAGES, with what's remembered
+/// of them. Also why a publisher here isn't listened for, and how many agents here haven't published a page in their
+/// current session.
+fn wanted(answer: &Value, publishers: &[String], remembered: &Remembered) -> (Vec<Agent>, Vec<String>, usize) {
     let (mut agents, mut waiting, mut others) = (Vec::<Agent>::new(), Vec::new(), 0);
+    let current: Vec<&str> =
+        answer["agents"].as_array().into_iter().flatten().filter_map(|a| a["session_id"].as_str()).collect();
     for a in answer["agents"].as_array().into_iter().flatten() {
         let handle = a["handle"].as_str().unwrap_or("").trim_start_matches('@').to_string();
         let session = a["session_id"].as_str().unwrap_or("");
-        if !publishers.contains(session) {
+        if !publishers.iter().any(|p| p == session) {
             others += 1;
             continue;
         }
@@ -95,9 +144,14 @@ fn wanted(answer: &Value, publishers: &BTreeSet<String>) -> (Vec<Agent>, Vec<Str
             _ => None,
         };
         match (why, thread) {
-            (None, Some(thread)) => agents.push(Agent { handle, session: session.to_string(), thread }),
+            (None, Some(thread)) => agents.push(Agent { handle, session: session.to_string(), thread, gone: false }),
             (why, _) => waiting.push(why.unwrap_or_default()),
         }
+    }
+    let gone = publishers.iter().filter(|p| session_ok(p) && !current.contains(&p.as_str())).take(GONE_PAGES);
+    for session in gone {
+        let (handle, thread) = remembered.get(session).cloned().unwrap_or_default();
+        agents.push(Agent { handle, session: session.clone(), thread, gone: true });
     }
     (agents, waiting, others)
 }
@@ -143,6 +197,8 @@ fn account(ran: &std::io::Result<cli::Ran>) -> Account {
 #[derive(Debug, Clone, Default)]
 struct Listening {
     handle: String,
+    /// On a finished agent's page.
+    gone: bool,
     thread: i64,
     running: bool,
     runs: u32,
@@ -159,8 +215,12 @@ struct Status {
     waiting: Vec<String>,
     /// Agents here whose current session hasn't published a page.
     others: usize,
-    /// The sessions that published a page, as last read; when, and what went wrong reading them.
-    publishers: BTreeSet<String>,
+    /// The sessions that published a page, the most recently changed page's first, as last read; when, and what
+    /// went wrong reading them.
+    publishers: Vec<String>,
+    /// Each agent here and the thread of its latest run, as last read: where a finished agent's page reaches an
+    /// agent it calls.
+    threads: BTreeMap<String, i64>,
     pages_at: Option<f64>,
     pages_problem: Option<String>,
     account: Account,
@@ -245,7 +305,7 @@ fn listen(h: Handle, cli: Cli, line: Arc<Line>, posts: Sender<Post>, status: Arc
     while !line.stop.load(Ordering::SeqCst) {
         let started = Instant::now();
         let (ended, delivered) = match cli.command(&["talk", "listen", "--session", &session]).spawn() {
-            Ok(child) => run_once(&h, child, &line, &posts, &status, &groups),
+            Ok(child) => run_once(&h, &cli, child, &line, &posts, &status, &groups),
             Err(e) => (format!("couldn't start {}: {e}", cli.describe()), false),
         };
         if line.stop.load(Ordering::SeqCst) {
@@ -271,6 +331,7 @@ fn listen(h: Handle, cli: Cli, line: Arc<Line>, posts: Sender<Post>, status: Arc
 /// One `talk listen`, to its end: why it ended, and whether it delivered anything.
 fn run_once(
     h: &Handle,
+    cli: &Cli,
     mut child: Child,
     line: &Line,
     posts: &Sender<Post>,
@@ -308,23 +369,10 @@ fn run_once(
                         h.log(format!("the first message's JSON, as talk listen printed it: {raw}"));
                     }
                     if text.trim().is_empty() {
-                        h.log(format!("a message on @{}'s page with no words: not posted", agent.handle));
+                        h.log(format!("a message on {} with no words: not posted", page_of(&agent)));
                         continue;
                     }
-                    let called = words::called(&text);
-                    let to = match called.is_empty() {
-                        true => format!("@{}", agent.handle),
-                        false => called.iter().map(|c| format!("@{c}")).collect::<Vec<_>>().join(" "),
-                    };
-                    h.log(format!(
-                        "a message on @{}'s page for {to} ({} characters): posting it in thread {}",
-                        agent.handle,
-                        text.chars().count(),
-                        agent.thread
-                    ));
-                    lock(status).last = Some((now(), to.clone()));
-                    let text = words::post(&agent.handle, &text, &agent.session);
-                    let _ = posts.send(Post { thread: agent.thread, to, text });
+                    deliver(h, cli, &agent, &text, &raw, posts, status);
                     delivered = true;
                     update(status, &session, |l| l.problem = None);
                 }
@@ -355,6 +403,67 @@ fn run_once(
         lock(status).recheck = true;
     }
     (ended, delivered)
+}
+
+/// A page as the log says it: `@scene's page`, or a finished agent's.
+fn page_of(agent: &Agent) -> String {
+    match (agent.handle.is_empty(), agent.gone) {
+        (false, false) => format!("@{}'s page", agent.handle),
+        (false, true) => format!("@{}'s page (finished)", agent.handle),
+        (true, _) => "a finished agent's page".into(),
+    }
+}
+
+/// A message on `agent`'s page goes to whom it's for: the agents it starts by calling, else the page's agent. A
+/// finished agent can't answer, so its page's message reaches only the agents it calls, in the page's remembered
+/// thread or else the first of their own; one that calls nobody else gets a reply on the page saying how to ask.
+fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &Sender<Post>, status: &Mutex<Status>) {
+    let publisher = (!agent.handle.is_empty()).then_some(agent.handle.as_str());
+    let mut to = match publisher {
+        Some(p) => words::recipients(text, p),
+        None => words::called(text),
+    };
+    if agent.gone {
+        to.retain(|t| Some(t.as_str()) != publisher);
+    }
+    let thread = (agent.thread > 0).then_some(agent.thread).or_else(|| {
+        let st = lock(status);
+        to.iter().find_map(|t| st.threads.get(t).copied())
+    });
+    let who = to.iter().map(|t| format!("@{t}")).collect::<Vec<_>>().join(" ");
+    match thread {
+        Some(thread) if !to.is_empty() => {
+            h.log(format!(
+                "a message on {} for {who} ({} characters): posting it in thread {thread}",
+                page_of(agent),
+                text.chars().count()
+            ));
+            lock(status).last = Some((now(), who.clone()));
+            let post = words::post(&to, publisher, text, &agent.session, said::asked_in(raw).as_deref());
+            let _ = posts.send(Post { thread, to: who, text: post });
+        }
+        _ => {
+            let answer = match (to.is_empty(), publisher) {
+                (true, Some(p)) => format!(
+                    "{p} has finished, so no agent answers this page now. To ask another, start a new comment with \
+                     @session @pm.<agent>, like @session @pm.search."
+                ),
+                (true, None) => "This page's agent has finished, so no agent answers it now. To ask another, start a \
+                                 new comment with @session @pm.<agent>, like @session @pm.search."
+                    .into(),
+                (false, _) => {
+                    format!("No thread here reaches {who}, so this didn't get to them. Ask them in Pointman.")
+                }
+            };
+            h.log(format!("a message on {} nobody here can take: answering on the page", page_of(agent)));
+            let args = ["talk", "reply", "--session", agent.session.as_str(), answer.as_str()];
+            match cli::run(cli, &args, REPLY_TIMEOUT) {
+                Ok(r) if r.code == Some(0) => {}
+                Ok(r) => h.log(format!("the reply on {} didn't go: {}", page_of(agent), r.stderr)),
+                Err(e) => h.log(format!("the reply on {} didn't go: {e}", page_of(agent))),
+            }
+        }
+    }
 }
 
 /// Posts go out one at a time, in order, each tried POST_TRIES times.
@@ -400,6 +509,7 @@ struct Talk {
     posts: Sender<Post>,
     groups: Option<Arc<Groups>>,
     state: PathBuf,
+    remembered: Remembered,
     checking: Arc<AtomicBool>,
     checked: Option<Instant>,
     scanning: Arc<AtomicBool>,
@@ -416,6 +526,7 @@ impl Talk {
         }
         let dir = self.h.node()["state_dir"].as_str().map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
         self.state = dir.clone();
+        self.remembered = remembered_from(&std::fs::read_to_string(dir.join("agents.json")).unwrap_or_default());
         let g = Arc::new(Groups { path: dir.join("listeners.json"), pids: Mutex::default() });
         g.stop_leftovers(&self.h);
         self.groups = Some(g.clone());
@@ -481,13 +592,25 @@ impl Talk {
                 return;
             }
         };
+        if remember(&mut self.remembered, &answer) {
+            let _ = std::fs::write(self.state.join("agents.json"), remembered_json(&self.remembered));
+        }
         let publishers = lock(&self.status).publishers.clone();
-        let (agents, waiting, others) = wanted(&answer, &publishers);
+        let (agents, waiting, others) = wanted(&answer, &publishers, &self.remembered);
         {
             let mut st = lock(&self.status);
             st.problem = None;
             st.waiting = waiting;
             st.others = others;
+            st.threads = answer["agents"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|a| {
+                    let handle = a["handle"].as_str()?.trim_start_matches('@').to_string();
+                    Some((handle, a["thread_id"].as_i64().filter(|t| *t > 0)?))
+                })
+                .collect();
         }
         let gone: Vec<String> =
             lock(&self.lines).keys().filter(|s| agents.iter().all(|a| &a.session != *s)).cloned().collect();
@@ -496,18 +619,27 @@ impl Talk {
         }
         for agent in agents {
             if let Some(line) = lock(&self.lines).get(&agent.session) {
-                // the same session: its messages go to the agent's thread now
-                *lock(&line.agent) = agent.clone();
+                // the same session: its messages go to the agent's thread now, or it's a finished agent's page now
+                let mut was = lock(&line.agent);
+                if agent.gone && !was.gone {
+                    self.h.log(format!("listening on {} (session {})", page_of(&agent), agent.session));
+                }
+                *was = agent.clone();
+                drop(was);
                 if let Some(l) = lock(&self.status).listeners.get_mut(&agent.session) {
                     l.handle = agent.handle.clone();
+                    l.gone = agent.gone;
                     l.thread = agent.thread;
                 }
                 continue;
             }
-            self.h.log(format!(
-                "listening for @{} (session {}), posting in thread {}",
-                agent.handle, agent.session, agent.thread
-            ));
+            match agent.gone {
+                false => self.h.log(format!(
+                    "listening for @{} (session {}), posting in thread {}",
+                    agent.handle, agent.session, agent.thread
+                )),
+                true => self.h.log(format!("listening on {} (session {})", page_of(&agent), agent.session)),
+            }
             let line = Arc::new(Line {
                 agent: Mutex::new(agent.clone()),
                 stop: AtomicBool::new(false),
@@ -515,7 +647,12 @@ impl Talk {
             });
             lock(&self.status).listeners.insert(
                 agent.session.clone(),
-                Listening { handle: agent.handle.clone(), thread: agent.thread, ..Default::default() },
+                Listening {
+                    handle: agent.handle.clone(),
+                    gone: agent.gone,
+                    thread: agent.thread,
+                    ..Default::default()
+                },
             );
             lock(&self.lines).insert(agent.session.clone(), line.clone());
             let (h, cli, posts, status, groups) =
@@ -606,7 +743,8 @@ impl Talk {
 
     fn event(&self) {
         let st = lock(&self.status);
-        let listening: Vec<&str> = st.listeners.values().filter(|l| l.running).map(|l| l.handle.as_str()).collect();
+        let listening: Vec<&str> =
+            st.listeners.values().filter(|l| l.running && !l.gone).map(|l| l.handle.as_str()).collect();
         self.h.event(
             "spacesheep.talk",
             json!({"on": st.account == Account::On, "listening": listening, "last_message_at": st.last.as_ref().map(|l| l.0)}),
@@ -615,7 +753,7 @@ impl Talk {
 }
 
 /// Who published the account's latest pages (`list --json`), each page's versions read only when it has changed.
-fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<BTreeSet<String>, String> {
+fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<Vec<String>, String> {
     let ran = cli::run(cli, &["list", "--json"], PAGES_TIMEOUT).map_err(|e| e.to_string())?;
     let list = match ran.code {
         Some(0) => pages::spaces(&ran.stdout)
@@ -675,12 +813,26 @@ fn health(st: &Status) -> Value {
         Account::Failed(why) => ("failing", vec![], format!("{why}{when}")),
     };
     let account = part("account", "account", "Spacesheep account's Talk", state, needs, why);
-    let running: Vec<String> = st.listeners.values().filter(|l| l.running).map(|l| format!("@{}", l.handle)).collect();
+    let running: Vec<String> =
+        st.listeners.values().filter(|l| l.running && !l.gone).map(|l| format!("@{}", l.handle)).collect();
+    let finished = st.listeners.values().filter(|l| l.running && l.gone).count();
+    let finished = match finished {
+        0 => String::new(),
+        1 => ", and on 1 page whose agent has finished".into(),
+        n => format!(", and on {n} pages whose agents have finished"),
+    };
     let failing: Vec<String> = st
         .listeners
         .values()
         .filter(|l| !l.running)
-        .filter_map(|l| Some(format!("@{}: {}", l.handle, l.problem.as_deref()?)))
+        .filter_map(|l| {
+            let who = match (l.handle.is_empty(), l.gone) {
+                (false, false) => format!("@{}", l.handle),
+                (false, true) => format!("@{}'s page (finished)", l.handle),
+                (true, _) => "a finished agent's page".into(),
+            };
+            Some(format!("{who}: {}", l.problem.as_deref()?))
+        })
         .collect();
     let last = match &st.last {
         Some((at, to)) => format!("; the last message was at {} for {to}", clock(*at)),
@@ -704,7 +856,9 @@ fn health(st: &Status) -> Value {
     } else if let Some(why) = &st.pages_problem {
         ("failing", format!("who published the pages couldn't be read: {why}"))
     } else if !running.is_empty() {
-        ("ok", format!("listening for {} (whose sessions published pages){last}", running.join(", ")))
+        ("ok", format!("listening for {} (whose sessions published pages){finished}{last}", running.join(", ")))
+    } else if !finished.is_empty() {
+        ("ok", format!("listening{}{last}", finished.trim_start_matches(", and")))
     } else if !st.looked || st.pages_at.is_none() {
         ("unknown", "not looked yet".into())
     } else if !st.waiting.is_empty() {
@@ -736,6 +890,7 @@ fn main() -> anyhow::Result<()> {
         posts,
         groups: None,
         state: PathBuf::new(),
+        remembered: Remembered::new(),
         checking: Arc::new(AtomicBool::new(false)),
         checked: None,
         scanning: Arc::new(AtomicBool::new(false)),
@@ -794,9 +949,17 @@ mod tests {
             {"handle": "odd", "client": "claude", "session_id": "s 5", "thread_id": 8},
             {"handle": "twin", "client": "claude", "session_id": "s-1", "thread_id": 9},
         ]});
-        let publishers: BTreeSet<String> = ["s-1", "s-4", "s 5", "s-gone"].map(String::from).into();
-        let (agents, waiting, others) = wanted(&answer, &publishers);
-        assert_eq!(agents, [Agent { handle: "scene".into(), session: "s-1".into(), thread: 5 }], "not quiet: no page");
+        let publishers: Vec<String> = ["s-1", "s-4", "s 5", "s-gone"].map(String::from).into();
+        let remembered = Remembered::from([("s-gone".to_string(), ("docrules".to_string(), 41))]);
+        let (agents, waiting, others) = wanted(&answer, &publishers, &remembered);
+        assert_eq!(
+            agents,
+            [
+                Agent { handle: "scene".into(), session: "s-1".into(), thread: 5, gone: false },
+                Agent { handle: "docrules".into(), session: "s-gone".into(), thread: 41, gone: true },
+            ],
+            "not quiet: no page; s-gone: a page whose agent has finished, as remembered"
+        );
         assert_eq!(
             waiting,
             [
@@ -806,7 +969,25 @@ mod tests {
             ]
         );
         assert_eq!(others, 2, "quiet and fresh");
-        assert!(wanted(&answer, &BTreeSet::new()).0.is_empty());
+        assert!(wanted(&answer, &[], &Remembered::new()).0.is_empty());
+        let many: Vec<String> = (0..20).map(|i| format!("gone-{i}")).collect();
+        let (agents, _, _) = wanted(&answer, &many, &Remembered::new());
+        assert_eq!(agents.len(), GONE_PAGES, "finished agents' pages, the newest {GONE_PAGES} only");
+        assert!(agents.iter().all(|a| a.gone && a.handle.is_empty() && a.thread == 0));
+    }
+
+    #[test]
+    fn each_agents_session_and_thread_is_remembered() {
+        let mut r = Remembered::new();
+        let answer = json!({"agents": [
+            {"handle": "scene", "session_id": "s-1", "thread_id": 5},
+            {"handle": "fresh", "session_id": "s-2", "thread_id": null},
+            {"handle": "Bad Name", "session_id": "s-3", "thread_id": 6},
+        ]});
+        assert!(remember(&mut r, &answer));
+        assert!(!remember(&mut r, &answer), "nothing new the second time");
+        assert_eq!(r, Remembered::from([("s-1".to_string(), ("scene".to_string(), 5))]));
+        assert_eq!(remembered_from(&remembered_json(&r)), r);
     }
 
     #[test]

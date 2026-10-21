@@ -228,10 +228,65 @@ fn messages_go_to_the_thread_of_the_agents_latest_run() {
     assert_eq!(got[0]["thread_id"], 52);
     assert_eq!(fake.listens("s-1"), 1, "the same listener: {:?}", fake.calls());
 
-    // a new session: the old one's listener stops, and the new one's starts
+    // a new session: its listener starts, and the old session's page is still listened on, as a finished agent's
     let old = fake.pids("s-1")[0];
     board.set_agents(vec![agent("scene", "s-2", 52)]);
-    assert!(wait(WITHIN, || fake.listens("s-2") == 1 && !alive(old)), "{:?}\n{}", fake.calls(), node.log());
+    assert!(wait(WITHIN, || fake.listens("s-2") == 1), "{:?}\n{}", fake.calls(), node.log());
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(alive(old) && fake.listens("s-1") == 1, "the same listener goes on: {:?}", fake.calls());
+}
+
+#[test]
+fn a_finished_agents_page_reaches_only_the_agents_it_calls() {
+    let board = Board::with(vec![agent("docrules", "s-d", 41), agent("editor", "s-e", 50)]);
+    let fake = Fake::new();
+    fake.published("s-d");
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    assert!(wait(WITHIN, || fake.pids("s-d").len() == 1), "{}", node.log());
+
+    // docrules is despawned: the node stops listing it, and its page is still listened on, as remembered
+    board.set_agents(vec![agent("editor", "s-e", 50)]);
+    assert!(wait(WITHIN, || node.log().contains("listening on @docrules's page (finished)")), "{}", node.log());
+    let message = json!({"message": "@pm.editor fix the table", "asked_in": "a comment on the page"});
+    fake.push("s-d", &format!("{message}\n"));
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    assert_eq!(got[0]["thread_id"], 41, "the page's own thread, remembered");
+    let text = got[0]["text"].as_str().unwrap();
+    let header = "@editor from spacesheep.dev (a comment on `@docrules`'s page, not signed):";
+    assert!(text.starts_with(header), "{text}");
+    assert_eq!(mentioned(text), ["editor"], "{text}");
+
+    // calling nobody, or only docrules: no post, and a reply on the page saying how to ask
+    fake.push("s-d", &format!("{}\n", json!({"message": "@pm.docrules hello"})));
+    assert!(
+        wait(WITHIN, || fake.calls().iter().any(|c| c.starts_with("talk reply --session s-d docrules has finished"))),
+        "{:?}\n{}",
+        fake.calls(),
+        node.log()
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(board.posts().len(), 1, "nothing posted for a finished agent");
+}
+
+#[test]
+fn a_page_whose_agent_was_never_seen_reaches_a_called_agent_in_its_own_thread() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("editor", "s-e", 50)]));
+    fake.published("s-old");
+    fake.prints("s-old", &format!("{}\n", json!({"text": "@pointman.editor look at this"})));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    assert_eq!(got[0]["thread_id"], 50, "editor's own thread: nobody remembers the page's");
+    let text = got[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("@editor from spacesheep.dev (Session tab of a page whose agent has finished, not signed):")
+    );
+    assert!(text.ends_with("`spacesheep talk reply --session s-old \"…\"`"), "the reply goes to the page: {text}");
+    let health = node.call("health.check", json!({})).unwrap();
+    let why = part(&health, "listeners")["why"].as_str().unwrap().to_string();
+    assert!(why.contains("1 page whose agent has finished"), "{why}");
 }
 
 #[test]

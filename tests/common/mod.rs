@@ -44,6 +44,8 @@ case "$1 $2" in
       fi
       sleep 0.05
     done;;
+  "talk reply")
+    echo '{"ok": true, "id": 1}';;
   "talk status")
     if [ -f "$here/status" ]; then cat "$here/status"; else printf '{\n  "pro": true,\n  "enabled": true,\n  "this_machine": false\n}\n'; fi;;
   "list --json")
