@@ -270,6 +270,23 @@ fn a_finished_agents_page_reaches_only_the_agents_it_calls() {
 }
 
 #[test]
+fn a_restart_keeps_the_finished_agents_it_remembers() {
+    // agents.json from a run before: docrules once had s-d here, and is gone now
+    let state = tempfile::tempdir().unwrap();
+    let dir = state.path().join("extensions").join("spacesheep");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("agents.json"), json!({"s-d": {"handle": "docrules", "thread": 41}}).to_string()).unwrap();
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("editor", "s-e", 50)]));
+    fake.published("s-d");
+    let node = spacesheep(&fake, &board, on()).state_dir(state.path()).start().unwrap();
+
+    // the first looks come before the pages are read: they mustn't forget s-d
+    assert!(wait(WITHIN, || node.log().contains("listening on @docrules's page (finished)")), "{}", node.log());
+    let kept = std::fs::read_to_string(dir.join("agents.json")).unwrap();
+    assert!(kept.contains("s-d"), "{kept}");
+}
+
+#[test]
 fn pages_no_agent_here_ever_had_are_left_to_their_own_node() {
     // every node reads the account's pages: s-nixos is an agent alive on another node, s-james James's own session
     let (fake, board) = (Fake::new(), Board::with(vec![agent("editor", "s-e", 50)]));
