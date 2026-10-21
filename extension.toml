@@ -13,7 +13,7 @@
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.4.0"
+version = "0.4.1"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
 node = ">=0.1,<1"
@@ -25,6 +25,7 @@ runtime = "binary"
 
 [behavior]
 skill = "SKILL.md"
+files = ["references"]           # how to write a page (pages.md), its checker (check.py) and a starter (template.html)
 
 [permissions]
 rules = ["Bash(spacesheep:*)", "Bash(npx -y spacesheep@latest:*)"]
