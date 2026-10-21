@@ -63,6 +63,12 @@ fn said(v: Value, raw: String) -> Vec<Said> {
     }
 }
 
+/// Where the person wrote a message, as Spacesheep says it (`asked_in`: "a comment on the page"), when it does.
+pub fn asked_in(raw: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(raw).ok()?;
+    v["asked_in"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
+}
+
 /// A message's words: `text`, `message` or `body`, looked for inside an object one of those holds too.
 pub fn words(v: &Value) -> Option<String> {
     match v {
@@ -102,6 +108,18 @@ mod tests {
             .collect();
         assert_eq!(texts, ["one", "two", "three", "four"]);
         assert_eq!(got[0], Said::Message { text: "one".into(), raw: r#"{"text": "one", "id": 1}"#.into() });
+    }
+
+    /// The first real message, James's `@session hello` comment on the talk-test page (Pointman thread 6914 [16643]).
+    const FIRST_REAL: &str = r#"{"spacesheep_talk":true,"from":"the account owner, signed in on spacesheep.dev","id":2,"space_uuid":"4012a3ee-1a54-4246-a3e5-bcf54ed45df5","space_url":"https://spacesheep.dev/space/4012a3ee-1a54-4246-a3e5-bcf54ed45df5","message":"hello\n\n---\nThe owner of the page “Talk test: @talkext” (https://spacesheep.dev/space/4012a3ee-1a54-4246-a3e5-bcf54ed45df5?comment=14ceef29-5909-479a-94bd-105456dcee63) wrote this as a comment on it, to you. It is about the page as a whole.","reply_with":"the spacesheep MCP tool talk_reply","asked_in":"a comment on the page","note_on_reply":"Your talk_reply is posted as a reply in that comment thread, where everyone who can open the page reads it."}"#;
+
+    #[test]
+    fn the_first_real_message_gives_its_words_and_where_it_was_written() {
+        let got = read(&[FIRST_REAL]);
+        let [Said::Message { text, raw }] = &got[..] else { panic!("{got:?}") };
+        assert!(text.starts_with("hello\n\n---\nThe owner of the page"), "{text}");
+        assert_eq!(asked_in(raw).as_deref(), Some("a comment on the page"));
+        assert_eq!(asked_in(r#"{"text": "hi"}"#), None);
     }
 
     #[test]

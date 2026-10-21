@@ -52,21 +52,30 @@ pub fn called(text: &str) -> Vec<String> {
     out
 }
 
-/// The post a message from a page's Session tab becomes: the mentions of the agents it's for (which wake them), the
-/// words fenced, and how to answer. It's for the agents the message calls, else the one that published the page.
+/// Where a message was written, as a post's header says it: Spacesheep's `asked_in` ("a comment on the page"), else
+/// the Session tab; and whose page it is (`whose`) when the post isn't for that page's own agent.
+pub fn place(via: Option<&str>, whose: Option<&str>) -> String {
+    let base = via.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("Session tab");
+    match whose {
+        None => base.to_string(),
+        Some(w) if base.contains("the page") => base.replacen("the page", w, 1),
+        Some(w) => format!("{base} of {w}"),
+    }
+}
+
+/// The post a message from a page becomes: the mentions of the agents it's for (`to`, which wakes them), the words
+/// fenced, and how to answer. `publisher` is the page's agent, None when it has finished and nobody knows its name.
 /// The reply names the session the page talks to, the publisher's, whichever agent answers and whatever session it
 /// wakes in.
-pub fn post(publisher: &str, text: &str, session: &str) -> String {
-    let called = called(text);
-    let (to, page) = match called.as_slice() {
-        [] => (format!("@{publisher}"), "Session tab".to_string()),
-        [one] if one == publisher => (format!("@{publisher}"), "Session tab".to_string()),
-        many => (
-            many.iter().map(|h| format!("@{h}")).collect::<Vec<_>>().join(" "),
-            // the publisher in code, so naming it doesn't wake it too
-            format!("Session tab of `@{publisher}`'s page"),
-        ),
+pub fn post(to: &[String], publisher: Option<&str>, text: &str, session: &str, via: Option<&str>) -> String {
+    let own = matches!(to, [one] if Some(one.as_str()) == publisher);
+    // the publisher in code, so naming it doesn't wake it too
+    let whose = match publisher {
+        Some(p) => format!("`@{p}`'s page"),
+        None => "a page whose agent has finished".to_string(),
     };
+    let page = place(via, (!own).then_some(whose.as_str()));
+    let to = to.iter().map(|h| format!("@{h}")).collect::<Vec<_>>().join(" ");
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let text = text.trim_matches('\n').trim_end();
     let (text, cut) = match text.char_indices().nth(TEXT_MAX) {
@@ -78,6 +87,16 @@ pub fn post(publisher: &str, text: &str, session: &str) -> String {
         "{to} from spacesheep.dev ({page}, not signed):\n\n{f}\n{text}\n{f}{cut}\n\nAnswer here, then send it to the \
          page: `spacesheep talk reply --session {session} \"…\"`"
     )
+}
+
+/// Who a message is for: the agents it starts by calling, else the page's agent.
+pub fn recipients(text: &str, publisher: &str) -> Vec<String> {
+    let called = called(text);
+    if called.is_empty() {
+        vec![publisher.to_string()]
+    } else {
+        called
+    }
 }
 
 pub fn now() -> f64 {
@@ -99,6 +118,11 @@ pub fn clock(at: f64) -> String {
 mod tests {
     use super::*;
 
+    /// As the listener posts a message on `publisher`'s own page, from its Session tab.
+    fn post_on(publisher: &str, text: &str, session: &str) -> String {
+        post(&recipients(text, publisher), Some(publisher), text, session, None)
+    }
+
     #[test]
     fn the_fence_is_longer_than_any_run_of_backticks_inside() {
         assert_eq!(fence("plain"), "```");
@@ -109,7 +133,7 @@ mod tests {
 
     #[test]
     fn a_post_mentions_the_agent_fences_the_words_and_names_the_session() {
-        let p = post("scene", "hi @james\r\nsee ```x```", "abc-123");
+        let p = post_on("scene", "hi @james\r\nsee ```x```", "abc-123");
         assert_eq!(
             p,
             "@scene from spacesheep.dev (Session tab, not signed):\n\n````\nhi @james\nsee ```x```\n````\n\nAnswer \
@@ -129,7 +153,7 @@ mod tests {
         assert!(called("hey @editor").is_empty(), "only at the start");
         assert!(called("@editor's cut is long").is_empty(), "not addressing");
         assert!(called("@-x hi").is_empty() && called("@ hi").is_empty() && called("").is_empty());
-        let p = post("scene", "@editor, cut the intro", "abc-123");
+        let p = post_on("scene", "@editor, cut the intro", "abc-123");
         assert!(
             p.starts_with(
                 "@editor from spacesheep.dev (Session tab of `@scene`'s page, not signed):\n\n```\n@editor, cut"
@@ -137,12 +161,31 @@ mod tests {
             "{p}"
         );
         assert!(p.ends_with("`spacesheep talk reply --session abc-123 \"…\"`"), "the page's session: {p}");
-        assert!(post("scene", "@scene hi", "s").starts_with("@scene from spacesheep.dev (Session tab, not signed)"));
+        assert!(post_on("scene", "@scene hi", "s").starts_with("@scene from spacesheep.dev (Session tab, not signed)"));
+    }
+
+    #[test]
+    fn the_header_says_where_it_was_written_and_whose_page() {
+        let comment = Some("a comment on the page");
+        assert_eq!(place(comment, None), "a comment on the page");
+        assert_eq!(place(comment, Some("`@scene`'s page")), "a comment on `@scene`'s page");
+        assert_eq!(place(None, Some("`@scene`'s page")), "Session tab of `@scene`'s page");
+        assert_eq!(place(Some("  "), None), "Session tab");
+        let to = vec!["editor".to_string()];
+        let p = post(&to, None, "@pm.editor fix it", "s-d", comment);
+        assert!(
+            p.starts_with("@editor from spacesheep.dev (a comment on a page whose agent has finished, not signed):"),
+            "{p}"
+        );
+        let p = post(&to, Some("docrules"), "@pm.editor fix it", "s-d", comment);
+        assert!(p.starts_with("@editor from spacesheep.dev (a comment on `@docrules`'s page, not signed):"), "{p}");
+        assert_eq!(recipients("hello", "scene"), ["scene"]);
+        assert_eq!(recipients("@pm.editor hello", "scene"), ["editor"]);
     }
 
     #[test]
     fn long_words_are_cut_outside_the_fence() {
-        let p = post("scene", &"x".repeat(TEXT_MAX + 5), "s");
+        let p = post_on("scene", &"x".repeat(TEXT_MAX + 5), "s");
         assert!(p.contains(&format!("{}\n```\n\n(cut: 5 more characters)", "x".repeat(10))), "{}", &p[p.len() - 200..]);
         assert!(p.chars().count() < 40_000);
     }

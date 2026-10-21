@@ -64,9 +64,17 @@ impl Known {
         self.0.get(&s.id).is_none_or(|(at, _)| *at != s.updated_at || at.is_empty())
     }
 
-    /// Every session that published one of these pages.
-    pub fn publishers(&self) -> BTreeSet<String> {
-        self.0.values().flat_map(|(_, who)| who.iter().cloned()).collect()
+    /// Every session that published one of these pages, the most recently changed page's first, each once.
+    pub fn publishers(&self) -> Vec<String> {
+        let mut pages: Vec<&(String, BTreeSet<String>)> = self.0.values().collect();
+        pages.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut out: Vec<String> = Vec::new();
+        for s in pages.into_iter().flat_map(|(_, who)| who) {
+            if !out.contains(s) {
+                out.push(s.clone());
+            }
+        }
+        out
     }
 }
 
@@ -98,6 +106,8 @@ mod tests {
         assert!(known.stale(&Space { id: "p1".into(), updated_at: "t2".into() }));
         let again = Known::from_json(&known.to_json());
         assert_eq!(again, known);
-        assert_eq!(again.publishers(), BTreeSet::from(["s-1".to_string()]));
+        assert_eq!(again.publishers(), ["s-1"]);
+        known.0.insert("p2".into(), ("t9".into(), BTreeSet::from(["s-2".to_string(), "s-1".to_string()])));
+        assert_eq!(known.publishers(), ["s-1", "s-2"], "the newest page's sessions first, each once");
     }
 }
