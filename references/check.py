@@ -9,18 +9,29 @@ anything fails (0 when there are only warnings, or nothing). It reads the HTML a
 text a script adds later isn't seen. It counts only text people see: not scripts, styles,
 the bodies of closed <details>, code or <pre>. An inline <code> counts as one word.
 
-  first-visual  fail  a visual within the page's first FIRST_VISUAL_WORDS words
-  paragraph     fail  at most PARAGRAPH_SENTENCES sentences and PARAGRAPH_WORDS words
-  sentence      fail  at most SENTENCE_WORDS words
-  text-run      fail  at most RUN_WORDS words of running text between visuals
-  heading       fail  a heading isn't empty or generic (GENERIC_HEADINGS)
-  long-page     warn  more than PAGE_WORDS visible words outside <details>
-  link          warn  a link in the middle of a paragraph: put it at the end, or fold it
-  motion        warn  something that moves on its own: autoplay, <marquee>, an endless animation
-  viewport      fail  no <meta name="viewport">
+The rules are docrules' (rules.md, Pointman thread 6914); their numbers in brackets.
 
-A visual is a table, svg, canvas, img, figure, pre, list (ol or ul), video, iframe, a diff
-(class "diff"), KPI tiles (class "kpis"), or anything with role="img".
+  first-visual  fail  a visual within the page's first FIRST_SCREEN_WORDS words [2]
+  code-name     fail  no code names (a function, flag, path, hash or <code>) in the first
+                      FIRST_SCREEN_WORDS words, a heading or a KPI tile [3]
+  heading       fail  a heading isn't empty or generic (GENERIC_HEADINGS) [4]
+  sentence      fail  at most SENTENCE_WORDS words, STEP_SENTENCE_WORDS in a step (an <ol> item) [8]
+  paragraph     fail  at most PARAGRAPH_WORDS words [8]
+  text-run      fail  at most RUN_WORDS words of running text between visuals [9]
+  cell          fail  a table cell of at most CELL_WORDS words [10]
+  columns       warn  a table of more than TABLE_COLUMNS columns [10]
+  kpis          fail  at most KPI_TILES tiles in a class="kpis" group [11]
+  link          warn  a link in the middle of a paragraph: put it at the end, or fold it.
+                      A task (pointman://item/…), PR or commit link may stay inline [14]
+  motion        warn  something that moves on its own: autoplay, <marquee>, an endless animation [14]
+  viewport      fail  no <meta name="viewport"> [15]
+  long-page     warn  more than PAGE_WORDS visible words outside <details>
+
+A visual is a table, svg, canvas, img, figure, pre, list (ol or ul), video, iframe, anything
+with role="img", or an element with one of VISUAL_CLASSES (as docrules' metrics.py: a diff,
+KPI tiles, a card or box drawn with divs). A list item over ITEM_WORDS words, or a table cell
+over CELL_WORDS, is running text: its words add to the run, and a list or table whose items
+(data cells, for a table) are all that long is no visual at all.
 """
 import argparse
 import json
@@ -29,17 +40,38 @@ import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
-FIRST_VISUAL_WORDS = 150
-PARAGRAPH_SENTENCES = 3
-PARAGRAPH_WORDS = 60
+FIRST_SCREEN_WORDS = 150
 SENTENCE_WORDS = 25
+STEP_SENTENCE_WORDS = 20
+PARAGRAPH_WORDS = 60
 RUN_WORDS = 120
+ITEM_WORDS = 25
+CELL_WORDS = 10
+TABLE_COLUMNS = 6  # 5 options side by side, and the label column
+KPI_TILES = 4
 PAGE_WORDS = 1500
 GENERIC_HEADINGS = {"overview", "background", "introduction", "intro", "details", "summary", "notes", "note", "context"}
 
 VISUAL_TAGS = {"table", "svg", "canvas", "img", "figure", "pre", "ol", "ul", "video", "iframe", "picture"}
-VISUAL_CLASSES = {"diff", "kpis"}
+VISUAL_CLASSES = {"diff", "kpis", "bars", "chart", "box", "card", "flow", "steps", "fig", "grid2", "try"}
 VISUAL_ROLES = {"img"}
+# links a reader must open now, which may sit inline: the task, the PR, the commit
+INLINE_LINKS = re.compile(r"^(pointman://item/|https?://github\.com/[^/]+/[^/]+/(pull/\d+|commit/[0-9a-f]{7,40}))")
+CODE_NAME = re.compile("|".join([
+    r"`[^`]*`",  # a <code>
+    r"\b[A-Za-z_][\w.]*\([^()]{0,40}\)",  # a function: rank(), events(line)
+    r"(?<![\w-])--?[A-Za-z][\w-]*",  # a flag: --json, -p
+    r"(?<![\w/])(?:~|\.\.?)?/(?=[\w./-]*[A-Za-z])[\w.-]+/[\w./-]*",  # a path: /api/search, ~/x/y
+    r"\b[\w-]+/[\w.-]+\.[a-z]{1,5}\b",  # a path to a file: src/check.py
+    r"\b[\w-]+\.(?:py|ts|tsx|js|jsx|mjs|rs|go|rb|java|kt|swift|c|h|cpp|toml|json|jsonl|yaml|yml|md|html|css|sh|sql|lock)\b",
+    r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b",  # a hash
+    r"\b[A-Za-z][A-Za-z0-9]*_\w+",  # snake_case, UPPER_CASE
+    r"\b[a-z]{2,}[A-Z][a-z0-9]\w*",  # camelCase
+    r"\b\w+::\w+",  # Type::method
+    r"\b[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]+)+\b",  # a dotted.name
+]))
+# matches that are words, not code names: Node.js, page(s), a domain
+NOT_CODE = re.compile(r"^[A-Z][a-z]+\.js$|\(s\)$|\.(com|org|net|dev|io|ai|app|co|uk|sh|so|me|gg|tv|edu|gov)$")
 
 HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 # controls and labels: their words are seen, but they aren't prose
@@ -146,12 +178,39 @@ def plain(node):
     return node.attrs.get("alt", "") + "".join(plain(c) for c in node.children)
 
 
+def code_names(text):
+    """the code names in a piece of text, each once, in order"""
+    found = [m.group(0) for m in CODE_NAME.finditer(text)]
+    return list(dict.fromkeys(n for n in found if n.strip("`") and not NOT_CODE.search(n)))
+
+
+def columns(table):
+    """a table's widest row, in columns (colspan counted)"""
+    widest = 0
+    for part in [table] + [c for c in table.children if isinstance(c, Node) and c.tag in ("thead", "tbody", "tfoot")]:
+        for row in (c for c in part.children if isinstance(c, Node) and c.tag == "tr"):
+            cells = [c for c in row.children if isinstance(c, Node) and c.tag in ("td", "th")]
+            widest = max(widest, sum(int(c.attrs["colspan"]) if c.attrs.get("colspan", "").isdigit() else 1 for c in cells))
+    return widest
+
+
 class Block:
     """one element's own text: a paragraph, a list item, a cell, a heading …"""
 
-    def __init__(self, el, kind, heading):
+    def __init__(self, el, kind, heading, first_screen, kpi, step):
         self.el, self.kind, self.heading = el, kind, heading
+        self.first_screen, self.kpi, self.step = first_screen, kpi, step
         self.parts = []  # (text, the link it's in or None)
+
+
+class Item:
+    """a list item or a table cell, all its words (but a nested list's items)"""
+
+    def __init__(self, el, picture):
+        self.el, self.picture, self.words, self.text = el, picture, 0, ""
+
+    def long(self):
+        return self.words > (ITEM_WORDS if self.el.tag == "li" else CELL_WORDS)
 
 
 class Check:
@@ -182,6 +241,7 @@ class Check:
 
     def element(self, el, ctx):
         tag, a = el.tag, el.attrs
+        classes = set(a.get("class", "").split())
         if tag == "meta" and a.get("name", "").lower() == "viewport":
             self.viewport = True
         self.motion(el)
@@ -196,27 +256,57 @@ class Check:
             # one word, whatever it holds, and no sentence ends inside it
             code = plain(el).strip()
             return self.text(Text("`" + re.sub(r"\s+", "·", code) + "`" if code else ""), ctx)
-        visual = tag in VISUAL_TAGS or VISUAL_CLASSES & set(a.get("class", "").split()) or a.get("role") in VISUAL_ROLES
-        if visual and not ctx["visual"]:
-            self.visual(el)
-            ctx = {**ctx, "visual": True}
+        group = item = None
+        if (tag in VISUAL_TAGS or VISUAL_CLASSES & classes or a.get("role") in VISUAL_ROLES) and not ctx["visual"]:
+            if tag in ("ul", "ol", "table"):
+                # a visual, or running text: known once its items are counted
+                group = {"el": el, "seen": self.seen, "heading": self.heading, "items": []}
+                ctx = {**ctx, "visual": True, "group": group}
+            else:
+                self.visual(el.line, tag, self.heading, self.seen)
+                ctx = {**ctx, "visual": True}
+        if a.get("role") in VISUAL_ROLES:
+            ctx = {**ctx, "picture": True}  # its words are a picture's: no prose rules inside
+        if "kpis" in classes:
+            self.kpis(el)
+            ctx = {**ctx, "kpi": True}
+        wide = columns(el) if tag == "table" else 0
+        if wide > TABLE_COLUMNS:
+            self.add("columns", "warn", el.line, f"a table of {wide} columns; at most {TABLE_COLUMNS}, 5 options side by side and the label column")
+        if tag in ("ul", "ol"):
+            ctx = {**ctx, "list": tag}
+        if tag in ("li", "td", "th"):
+            item = Item(el, ctx["picture"])
+            if ctx["group"]:
+                ctx["group"]["items"].append(item)
+            ctx = {**ctx, "item": item}
         if tag == "pre":
             ctx = {**ctx, "code": True}
+        if tag == "a" and "href" in a and not ctx["link"]:
+            self.links += 1
+            ctx = {**ctx, "link": (self.links, el.line, plain(el).strip(), a["href"])}
+        self.contents(el, ctx)
+        if item:
+            self.end_item(item)
+        if group:
+            self.end_group(group)
+
+    def contents(self, el, ctx):
+        tag = el.tag
         if tag == "details":
             return self.details(el, ctx)
         if tag in HEADINGS:
             self.new_heading(el)
-        if tag == "a" and "href" in a and not ctx["link"]:
-            self.links += 1
-            ctx = {**ctx, "link": (self.links, el.line, plain(el).strip())}
-        if tag in BLOCKS:
-            kind = "heading" if tag in HEADINGS else "ui" if tag in UI else "prose" if tag in PROSE else "other"
-            if ctx["block"] and ctx["block"].kind in ("heading", "ui") and kind not in ("heading", "ui"):
-                kind = ctx["block"].kind  # a div inside a <summary> is still the summary
-            block = Block(el, kind, self.heading)
-            self.walk(el, {**ctx, "block": block, "aside": ctx["aside"] or kind in ("heading", "ui")})
-            return self.paragraph(block)
-        self.walk(el, ctx)
+        if tag not in BLOCKS:
+            return self.walk(el, ctx)
+        kind = "heading" if tag in HEADINGS else "ui" if tag in UI else "prose" if tag in PROSE else "other"
+        if ctx["block"] and ctx["block"].kind in ("heading", "ui") and kind not in ("heading", "ui"):
+            kind = ctx["block"].kind  # a div inside a <summary> is still the summary
+        if ctx["picture"] and tag not in HEADINGS:
+            kind = "picture"
+        block = Block(el, kind, self.heading, self.seen < FIRST_SCREEN_WORDS, ctx["kpi"], ctx["list"] == "ol")
+        self.walk(el, {**ctx, "block": block, "aside": ctx["aside"] or kind in ("heading", "ui")})
+        self.paragraph(block)
 
     def details(self, el, ctx):
         """the summary is seen; the body only when it's open"""
@@ -239,12 +329,15 @@ class Check:
             if not self.run[0]:
                 self.run[1:] = [ctx["block"].el.line if ctx["block"] else 0, self.heading, str(t)]
             self.run[0] += n
+        if ctx["item"] and n:
+            ctx["item"].words += n
+            ctx["item"].text += str(t)
         if ctx["block"]:
             ctx["block"].parts.append((str(t), ctx["link"]))
 
-    def visual(self, el):
+    def visual(self, line, tag, heading, seen):
         if self.first_visual is None:
-            self.first_visual = (el.line, el.tag, self.heading, self.seen)
+            self.first_visual = (line, tag, heading, seen)
         self.end_run()
         self.run = [0, None, None, ""]
 
@@ -253,6 +346,30 @@ class Check:
             n, line, heading, first = self.run
             self.add("text-run", "fail", line,
                      f"{n} words of running text before the next visual, from {snippet(first)}; at most {RUN_WORDS}", heading)
+
+    def end_item(self, item):
+        if item.el.tag in ("td", "th") and item.words > CELL_WORDS and not item.picture:
+            self.add("cell", "fail", item.el.line,
+                     f"{item.words} words in a table cell, {snippet(item.text, 6)}; at most {CELL_WORDS}, and no full sentences")
+
+    def end_group(self, group):
+        """a list or table: long items are running text; all long, it's no visual"""
+        el = group["el"]
+        kind = "td" if el.tag == "table" else "li"
+        items = [i for i in group["items"] if i.el.tag == kind and i.words]
+        long = [i for i in items if i.long()]
+        if long and self.run is not None:
+            if not self.run[0]:
+                self.run[1:] = [long[0].el.line, group["heading"], long[0].text]
+            self.run[0] += sum(i.words for i in long)
+        if not items or len(long) < len(items):
+            self.visual(el.line, el.tag, group["heading"], group["seen"])
+
+    def kpis(self, el):
+        tiles = [n for n in descendants(el) if "kpi" in n.attrs.get("class", "").split()]
+        tiles = tiles or [c for c in el.children if isinstance(c, Node)]
+        if len(tiles) > KPI_TILES:
+            self.add("kpis", "fail", el.line, f"{len(tiles)} KPI tiles; at most {KPI_TILES}: the numbers that matter, the rest in a table")
 
     def new_heading(self, el):
         text = " ".join(plain(el).split()) or el.attrs.get("aria-label", "").strip()
@@ -265,23 +382,31 @@ class Check:
             self.add("heading", "fail", el.line, f'"{text}" is a generic heading; say what this section shows or found')
 
     def paragraph(self, block):
-        if block.kind in ("heading", "ui"):
-            return
         text = "".join(t for t, _ in block.parts)
         n = words(text)
-        if not n:
+        if not n or block.kind == "picture":
             return
         line, heading = block.el.line, block.heading
-        found = sentences(text)
-        for s in found:
-            if words(s) > SENTENCE_WORDS:
-                self.add("sentence", "fail", line, f"{words(s)} words in {snippet(s)}; at most {SENTENCE_WORDS}", heading)
+        where = "a heading" if block.kind == "heading" else "a KPI tile" if block.kpi else "the first screen" if block.first_screen else None
+        names = code_names(" ".join(t for t, _ in block.parts)) if where else []  # not across elements: <b>a</b><i>B</i>
+        if names:
+            shown = ", ".join(f'"{x.strip("`").replace("·", " ")}"' for x in names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+            self.add("code-name", "fail", line,
+                     f"{shown} in {where}; say it in the reader's words, and keep code names for diffs, code and folded detail", heading)
+        if block.kind in ("heading", "ui"):
+            return
+        limit = STEP_SENTENCE_WORDS if block.step else SENTENCE_WORDS
+        for s in sentences(text):
+            if words(s) > limit:
+                self.add("sentence", "fail", line,
+                         f"{words(s)} words in {snippet(s)}; at most {limit}{' in a step' if block.step else ''}", heading)
         if block.kind != "prose":
             return
-        if len(found) > PARAGRAPH_SENTENCES or n > PARAGRAPH_WORDS:
-            self.add("paragraph", "fail", line,
-                     f"{len(found)} sentences and {n} words in {snippet(text)}; at most {PARAGRAPH_SENTENCES} and {PARAGRAPH_WORDS}", heading)
+        if n > PARAGRAPH_WORDS:
+            self.add("paragraph", "fail", line, f"{n} words in {snippet(text)}; at most {PARAGRAPH_WORDS}", heading)
         for link in {l for _, l in block.parts if l}:
+            if INLINE_LINKS.match(link[3]):
+                continue
             at = [i for i, (_, l) in enumerate(block.parts) if l == link]
             before = words("".join(t for t, _ in block.parts[:at[0]]))
             after = words("".join(t for t, _ in block.parts[at[-1] + 1:]))
@@ -312,14 +437,21 @@ class Check:
                 self.add("first-visual", "fail", 1, "no visual on the page: a table, list, figure, svg, img, pre or diff", "top")
         else:
             line, tag, heading, before = self.first_visual
-            if before > FIRST_VISUAL_WORDS:
+            if before > FIRST_SCREEN_WORDS:
                 self.add("first-visual", "fail", line,
-                         f"{before} words before the first visual (a <{tag}>); at most {FIRST_VISUAL_WORDS}", heading)
+                         f"{before} words before the first visual (a <{tag}>); at most {FIRST_SCREEN_WORDS}", heading)
         if self.outside_details > PAGE_WORDS:
             self.add("long-page", "warn", 0,
                      f"{self.outside_details:,} visible words outside <details>; fold detail away, or split the page (over {PAGE_WORDS:,})", "whole page")
         if not self.viewport:
             self.add("viewport", "fail", 0, 'no <meta name="viewport" content="width=device-width, initial-scale=1">: a phone shows it zoomed out', "head")
+
+
+def descendants(node):
+    for c in node.children:
+        if isinstance(c, Node):
+            yield c
+            yield from descendants(c)
 
 
 def check_html(html):
@@ -328,8 +460,8 @@ def check_html(html):
     tree.feed(html.lstrip("﻿"))
     tree.close()
     c = Check()
-    c.walk(tree.root, {"quiet": False, "code": False, "visual": False, "details": False,
-                       "aside": False, "link": None, "block": None})
+    c.walk(tree.root, {"quiet": False, "code": False, "visual": False, "details": False, "aside": False, "link": None,
+                       "block": None, "group": None, "item": None, "list": None, "kpi": False, "picture": False})
     c.finish()
     c.findings.sort(key=lambda f: f["line"])
     return c.findings, c.outside_details
