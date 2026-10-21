@@ -1,9 +1,10 @@
 //! Talk as a node runs it: the built binary under the SDK's stand-in node, with a fake `spacesheep` (tests/common).
-//! Its clock runs 60 times faster, so it reads the agents every second and starts an ended listener again in 0.1 s.
+//! Its clock runs 60 times faster, so it reads the account's switch and the agents every second, the pages every five,
+//! and starts an ended listener again in 0.1 s.
 
 mod common;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::*;
 use serde_json::json;
@@ -13,6 +14,7 @@ const MESSAGE: &str = r#"{"text": "Can you make the header blue?", "id": "m1"}"#
 #[test]
 fn a_message_becomes_one_post_in_the_agents_thread_fenced() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
     fake.prints("s-1", &format!("{MESSAGE}\n"));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 
@@ -41,12 +43,15 @@ fn a_message_becomes_one_post_in_the_agents_thread_fenced() {
     assert_eq!(fake.listens("s-1"), 1, "still the same listener");
 
     let health = node.call("health.check", json!({})).unwrap();
-    assert_eq!(part(&health, "node")["state"], "ok", "{health}");
-    assert!(wait(WITHIN, || part(&node.call("health.check", json!({})).unwrap(), "account")["state"] == "ok"));
+    assert_eq!(part(&health, "account")["state"], "ok", "{health}");
     let listeners = part(&health, "listeners");
     assert_eq!(listeners["state"], "ok", "{health}");
     let why = listeners["why"].as_str().unwrap();
-    assert!(why.starts_with("listening for @scene; the last message was at ") && why.ends_with(" for @scene"), "{why}");
+    assert!(
+        why.starts_with("listening for @scene (whose sessions published pages); the last message was at "),
+        "{why}"
+    );
+    assert!(why.ends_with(" for @scene"), "{why}");
     let event = node.wait_event_where("spacesheep.talk", WITHIN, |e| e["listening"] == json!(["scene"]));
     assert!(event.is_ok_and(|e| e["on"] == true && e["last_message_at"].is_f64()), "{:?}", node.events());
 }
@@ -54,7 +59,8 @@ fn a_message_becomes_one_post_in_the_agents_thread_fenced() {
 #[test]
 fn a_mention_inside_the_message_stays_inside_the_fence() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
-    let words = "@james look\n```\n@patchbay this closes a three-backtick fence\n```\nand `@astra` and ````@x````";
+    let words = "look @james\n```\n@patchbay this closes a three-backtick fence\n```\nand `@astra` and ````@x````";
+    fake.published("s-1");
     fake.prints("s-1", &format!("{}\n", json!({"text": words})));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 
@@ -66,62 +72,54 @@ fn a_mention_inside_the_message_stays_inside_the_fence() {
 }
 
 #[test]
-fn an_agent_not_listed_isnt_listened_for() {
+fn a_message_starting_with_handles_wakes_those_agents_in_the_pages_thread() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    let words = "@editor @Scene2, cut the intro and tell @james";
+    fake.prints("s-1", &format!("{}\n", json!({"text": words})));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    assert_eq!(got[0]["thread_id"], 41, "the page's thread");
+    let text = got[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("@editor @scene2 from spacesheep.dev (Session tab of `@scene`'s page, not signed):"),
+        "{text}"
+    );
+    assert_eq!(mentioned(text), ["editor", "scene2"], "those two, not @scene or @james: {text}");
+    assert!(text.ends_with("`spacesheep talk reply --session s-1 \"…\"`"), "the reply goes to the page: {text}");
+    assert!(node.log().contains("a message on @scene's page for @editor @scene2"), "{}", node.log());
+}
+
+#[test]
+fn only_agents_whose_session_published_a_page_are_listened_for() {
     let board = Board::with(vec![agent("scene", "s-1", 41), agent("quiet", "s-2", 42)]);
     let fake = Fake::new();
+    fake.published("s-1");
     fake.prints("s-2", &format!("{MESSAGE}\n"));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 
     assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{:?}\n{}", fake.calls(), node.log());
     std::thread::sleep(Duration::from_secs(2)); // two more looks
-    assert_eq!(fake.listens("s-2"), 0, "{:?}", fake.calls());
+    assert_eq!(fake.listens("s-2"), 0, "quiet's session has published nothing: {:?}", fake.calls());
     assert!(board.posts().is_empty());
+    assert!(fake.calls().contains(&"versions page-s-1 --json".to_string()), "{:?}", fake.calls());
 
-    // the list is quiet only now: scene's listener stops, and quiet's starts and posts in its thread
-    let pid = fake.pids("s-1")[0];
-    assert!(alive(pid));
-    node.change_settings(json!({"agents": ["@quiet"]})).unwrap();
-    assert!(wait(WITHIN, || !alive(pid)), "the listener for an agent taken off the list stops\n{}", node.log());
+    // quiet publishes a page: at the next read of the pages it's listened for, and its message posts in its thread
+    fake.published("s-2");
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
     assert_eq!(got[0]["thread_id"], 42);
     assert!(got[0]["text"].as_str().unwrap().starts_with("@quiet from spacesheep.dev"), "{}", got[0]["text"]);
-    fake.push("s-1", &format!("{MESSAGE}\n"));
-    std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(board.posts().len(), 1, "nothing from scene's session");
-    assert_eq!(fake.listens("s-1"), 1, "{:?}", fake.calls());
-    let health = node.call("health.check", json!({})).unwrap();
-    assert_eq!(part(&health, "node")["why"], "on for @quiet", "{health}");
-
-    // one listed that the node doesn't have: health says so
-    node.change_settings(json!({"agents": ["ghost"]})).unwrap();
-    assert!(wait(WITHIN, || {
-        let health = node.call("health.check", json!({})).unwrap();
-        part(&health, "listeners")["why"]
-            == "nobody to listen for: @ghost isn't one of this node's agents, or hasn't run here yet"
-    }));
-}
-
-#[test]
-fn a_settings_change_during_a_look_doesnt_hold_up_the_nodes_answers() {
-    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
-    fake.prints("s-1", &format!("{MESSAGE}\n"));
-    board.slow_next(Duration::from_secs(3));
-    let node = spacesheep(&fake, &board, on()).start().unwrap();
-    assert!(wait(WITHIN, || node.asked().iter().any(|(m, _)| m == "agents.sessions")), "{}", node.log());
-
-    // the first look is waiting on agents.sessions: settings.changed is still answered at once
-    let started = Instant::now();
-    node.change_settings(json!({"agents": ["scene", "editor"]})).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(1), "settings.changed took {:?}", started.elapsed());
-    // and the look in flight gets its answer: its listener posts
-    assert_eq!(board.wait_posts(WITHIN, |p| !p.is_empty()).len(), 1, "{}", node.log());
-    assert!(!node.log().contains("agents.sessions:"), "no look failed: {}", node.log());
+    let reads = fake.calls().iter().filter(|c| *c == "versions page-s-1 --json").count();
+    assert_eq!(reads, 1, "a page unchanged isn't read again: {:?}", fake.calls());
 }
 
 #[test]
 fn a_listener_that_ends_is_started_again() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
     // its link expires, then the CLI fails, then a message comes
     fake.ends("s-1", 1, "{\"spacesheep_talk\":false,\"stopped\":\"listen link expired or revoked\"}\n", 0, "");
     fake.ends("s-1", 2, "", 1, "\n  ✗ fetch failed\n\n");
@@ -142,7 +140,8 @@ fn a_listener_that_ends_is_started_again() {
 #[test]
 fn a_listener_that_keeps_ending_waits_longer_each_time() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
-    // Talk off for the account: the CLI's own answer, pretty-printed, every time
+    fake.published("s-1");
+    // turned off for the account just after it was read as on: the CLI's own answer, pretty-printed, every time
     for run in 1..=20 {
         fake.ends(
             "s-1",
@@ -152,8 +151,8 @@ fn a_listener_that_keeps_ending_waits_longer_each_time() {
             "",
         );
     }
-    fake.status("{\n  \"pro\": true,\n  \"enabled\": false\n}\n");
     let node = spacesheep(&fake, &board, on()).start().unwrap();
+    assert!(wait(WITHIN, || fake.listens("s-1") >= 1), "{}", node.log());
 
     // 0.08 s, 0.17, 0.33, 0.67, 1.33, 2.67 …: about six runs in five seconds, not sixty
     std::thread::sleep(Duration::from_secs(5));
@@ -163,34 +162,38 @@ fn a_listener_that_keeps_ending_waits_longer_each_time() {
     let listeners = part(&health, "listeners");
     assert_eq!(listeners["state"], "failing", "{health}");
     assert_eq!(listeners["why"], "@scene: talk is off for this account", "{health}");
-    let account = part(&health, "account");
-    assert_eq!(account["state"], "failing", "{health}");
-    assert!(account["why"].as_str().unwrap().starts_with("Talk is off for the Spacesheep account"), "{health}");
     assert!(board.posts().is_empty());
 }
 
 #[test]
-fn talk_off_on_the_node_means_no_listeners() {
+fn talk_off_for_the_account_means_no_listeners() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
     fake.prints("s-1", &format!("{MESSAGE}\n"));
-    let node = spacesheep(&fake, &board, json!({})).start().unwrap();
+    fake.talk(false);
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
 
     std::thread::sleep(Duration::from_secs(3)); // three looks' worth
-    assert!(fake.calls().is_empty(), "no CLI at all: {:?}", fake.calls());
+    let calls = fake.calls();
+    assert!(!calls.is_empty() && calls.iter().all(|c| c == "talk status"), "only the switch is read: {calls:?}");
     assert!(node.asked().iter().all(|(m, _)| m != "agents.sessions"), "{:?}", node.asked());
     assert!(board.posts().is_empty());
     let health = node.call("health.check", json!({})).unwrap();
-    assert_eq!(part(&health, "node")["state"], "stopped", "{health}");
-    let why = part(&health, "node")["why"].as_str().unwrap();
-    assert!(why.contains(r#"pointman config set node.extensions.spacesheep.agents '["scene"]'"#), "{why}");
-    assert_eq!(part(&health, "listeners")["state"], "stopped", "{health}");
+    let account = part(&health, "account");
+    assert_eq!(account["state"], "stopped", "{health}");
+    let why = account["why"].as_str().unwrap();
+    assert!(why.starts_with("Talk is off for the Spacesheep account, so a page's Session tab can't send"), "{why}");
+    let listeners = part(&health, "listeners");
+    assert_eq!(listeners["state"], "stopped", "{health}");
+    assert!(listeners["why"].as_str().unwrap().starts_with("not listening: Talk is off"), "{health}");
     assert_eq!(node.events()["spacesheep.talk"]["on"], false);
 
-    // switched on: it listens at once; and off again: the listener stops
-    node.change_settings(on()).unwrap();
+    // turned on for the account: it listens within a few seconds; and off again: the listener stops
+    fake.talk(true);
     assert_eq!(board.wait_posts(WITHIN, |p| !p.is_empty()).len(), 1, "{}", node.log());
+    assert!(wait(WITHIN, || node.events()["spacesheep.talk"]["on"] == true));
     let pid = fake.pids("s-1")[0];
-    node.change_settings(json!({"agents": []})).unwrap();
+    fake.talk(false);
     assert!(wait(WITHIN, || !alive(pid)), "{}", node.log());
     assert!(wait(WITHIN, || node.events()["spacesheep.talk"]["on"] == false));
 }
@@ -198,6 +201,7 @@ fn talk_off_on_the_node_means_no_listeners() {
 #[test]
 fn npx_runs_the_cli_when_the_machine_has_no_spacesheep() {
     let (fake, board) = (Fake::npx(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
     fake.prints("s-1", &format!("{MESSAGE}\n"));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 
@@ -205,11 +209,14 @@ fn npx_runs_the_cli_when_the_machine_has_no_spacesheep() {
     let calls = fake.calls();
     assert!(calls.contains(&"-y spacesheep@latest talk listen --session s-1".to_string()), "{calls:?}");
     assert!(calls.contains(&"-y spacesheep@latest talk status".to_string()), "{calls:?}");
+    assert!(calls.contains(&"-y spacesheep@latest list --json".to_string()), "{calls:?}");
 }
 
 #[test]
 fn messages_go_to_the_thread_of_the_agents_latest_run() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    fake.published("s-2");
     let node = spacesheep(&fake, &board, on()).start().unwrap();
     assert!(wait(WITHIN, || fake.pids("s-1").len() == 1), "{}", node.log());
 
@@ -230,6 +237,7 @@ fn messages_go_to_the_thread_of_the_agents_latest_run() {
 #[test]
 fn stopping_the_extension_stops_its_listeners_and_a_restart_stops_any_left_behind() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
     let node = spacesheep(&fake, &board, on()).start().unwrap();
     assert!(wait(WITHIN, || fake.pids("s-1").len() == 1), "{}", node.log());
     let pid = fake.pids("s-1")[0];

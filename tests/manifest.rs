@@ -17,10 +17,7 @@ fn the_manifest_keeps_to_cores_limits() {
     assert!(!ext["platforms"].as_array().unwrap().is_empty(), "a process says where it runs");
     let skill = m["behavior"]["skill"].as_str().unwrap();
     assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(skill).is_file(), "{skill}");
-    let agents = &m["settings"]["properties"]["agents"];
-    assert_eq!(agents["type"].as_str(), Some("array"));
-    assert_eq!(agents["default"].as_array().map(Vec::len), Some(0), "Talk is off by default: nobody listed");
-    assert_eq!(agents["items"]["type"].as_str(), Some("string"));
+    assert!(m.get("settings").is_none(), "no settings: the account's Talk switch is the one switch");
     let p = &m["permissions"];
     assert_eq!(
         (p["agents"].as_bool(), p["post"].as_bool()),

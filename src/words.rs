@@ -24,10 +24,43 @@ pub fn fence(text: &str) -> String {
     "`".repeat((longest + 1).max(3))
 }
 
-/// The post a message from a page's Session tab becomes: the agent's mention (which wakes it), the words fenced,
-/// and how to answer. The reply names the session the page talks to, which is the one listened for, whatever
-/// session the agent wakes in.
-pub fn post(handle: &str, text: &str, session: &str) -> String {
+/// The agents a message calls by starting with their handles (`@editor cut the intro`, `@editor, @scene: …`), each
+/// once, lowercased. A handle later in the message calls nobody, and neither does one that isn't addressing
+/// (`@editor's cut`).
+pub fn called(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = text.trim_start();
+    while let Some(after) = rest.strip_prefix('@') {
+        let end = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).unwrap_or(after.len());
+        let (name, tail) = after.split_at(end);
+        let name = name.to_ascii_lowercase();
+        let ends = tail.chars().next().is_none_or(|c| c.is_whitespace() || ",:;.!?".contains(c));
+        if !handle_ok(&name) || !ends {
+            break;
+        }
+        if !out.contains(&name) {
+            out.push(name);
+        }
+        rest = tail.trim_start_matches([',', ':', ';', '.', '!', '?']).trim_start();
+    }
+    out
+}
+
+/// The post a message from a page's Session tab becomes: the mentions of the agents it's for (which wake them), the
+/// words fenced, and how to answer. It's for the agents the message calls, else the one that published the page.
+/// The reply names the session the page talks to, the publisher's, whichever agent answers and whatever session it
+/// wakes in.
+pub fn post(publisher: &str, text: &str, session: &str) -> String {
+    let called = called(text);
+    let (to, page) = match called.as_slice() {
+        [] => (format!("@{publisher}"), "Session tab".to_string()),
+        [one] if one == publisher => (format!("@{publisher}"), "Session tab".to_string()),
+        many => (
+            many.iter().map(|h| format!("@{h}")).collect::<Vec<_>>().join(" "),
+            // the publisher in code, so naming it doesn't wake it too
+            format!("Session tab of `@{publisher}`'s page"),
+        ),
+    };
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let text = text.trim_matches('\n').trim_end();
     let (text, cut) = match text.char_indices().nth(TEXT_MAX) {
@@ -36,8 +69,8 @@ pub fn post(handle: &str, text: &str, session: &str) -> String {
     };
     let f = fence(text);
     format!(
-        "@{handle} from spacesheep.dev (Session tab, not signed):\n\n{f}\n{text}\n{f}{cut}\n\nAnswer here, then send it \
-         to the page: `spacesheep talk reply --session {session} \"…\"`"
+        "{to} from spacesheep.dev ({page}, not signed):\n\n{f}\n{text}\n{f}{cut}\n\nAnswer here, then send it to the \
+         page: `spacesheep talk reply --session {session} \"…\"`"
     )
 }
 
@@ -76,6 +109,25 @@ mod tests {
             "@scene from spacesheep.dev (Session tab, not signed):\n\n````\nhi @james\nsee ```x```\n````\n\nAnswer \
              here, then send it to the page: `spacesheep talk reply --session abc-123 \"…\"`"
         );
+    }
+
+    #[test]
+    fn a_message_starting_with_handles_is_for_those_agents() {
+        assert_eq!(called("@editor cut the intro"), ["editor"]);
+        assert_eq!(called("  @Editor, @scene: both of you, and @james later"), ["editor", "scene"]);
+        assert_eq!(called("@editor @editor again"), ["editor"]);
+        assert!(called("hey @editor").is_empty(), "only at the start");
+        assert!(called("@editor's cut is long").is_empty(), "not addressing");
+        assert!(called("@-x hi").is_empty() && called("@ hi").is_empty() && called("").is_empty());
+        let p = post("scene", "@editor, cut the intro", "abc-123");
+        assert!(
+            p.starts_with(
+                "@editor from spacesheep.dev (Session tab of `@scene`'s page, not signed):\n\n```\n@editor, cut"
+            ),
+            "{p}"
+        );
+        assert!(p.ends_with("`spacesheep talk reply --session abc-123 \"…\"`"), "the page's session: {p}");
+        assert!(post("scene", "@scene hi", "s").starts_with("@scene from spacesheep.dev (Session tab, not signed)"));
     }
 
     #[test]

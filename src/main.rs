@@ -1,14 +1,16 @@
 //! The extension's process: the node starts it as extension.toml's `[run]` says (`bin/spacesheep`) and talks to
 //! it over stdin and stdout (the SDK handles that). Log with `h.log(…)`: stdout is the node's.
 //!
-//! Every second on the `talk` lane it checks whether a look is due: every 60 s, and at once after the settings
-//! change. A look, while the `agents` setting lists anyone: the node's `agents.sessions`, then a listener for each
-//! listed agent with a session and a thread, and none for the rest. A listener
-//! is a thread running `spacesheep talk listen --session <id>`, started again with a growing wait whenever it ends.
-//! Each message goes out as a `board.post` in the agent's thread, in order, from a thread of their own. The
-//! listeners' process groups are kept in the state folder, so a restart stops any left behind.
+//! Every second on the `talk` lane: the account's Talk switch is read every minute (`talk status`), the pages and
+//! who published them every five while it's on (`list` and `versions`, pages.rs), and a look is due every minute
+//! or as soon as either changes. A look, while the account's Talk is on: the node's `agents.sessions`, then a
+//! listener for each agent whose session published a page, with a thread, and none for the rest. A listener is a
+//! thread running `spacesheep talk listen --session <id>`, started again with a growing wait whenever it ends. Each
+//! message goes out as a `board.post` in the publisher's thread, for the agents it starts by calling or else the
+//! publisher, in order, from a thread of their own. The listeners' process groups are kept in the state folder, so
+//! a restart stops any left behind.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::Child;
@@ -20,6 +22,7 @@ use std::time::{Duration, Instant};
 use pointman_extension::{Extension, Handle};
 use serde_json::{json, Value};
 use spacesheep::cli::{self, Cli};
+use spacesheep::pages::{self, Known};
 use spacesheep::said::{Reader, Said};
 use spacesheep::words::{self, clock, now};
 
@@ -27,10 +30,13 @@ use spacesheep::words::{self, clock, now};
 const TICK: Duration = Duration::from_secs(1);
 /// How often the node's agents are read.
 const EVERY: Duration = Duration::from_secs(60);
-/// How often the account's Talk switch is read (`talk status`), and how long it may take: npx's first run fetches
-/// the CLI.
-const STATUS_EVERY: Duration = Duration::from_secs(600);
+/// How often the account's Talk switch is read (`talk status`): it's the one switch, so a minute after it's turned
+/// on the listeners start. And how long it may take: npx's first run fetches the CLI.
+const STATUS_EVERY: Duration = Duration::from_secs(60);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(90);
+/// How often the pages are read for who published them, and how long each read may take.
+const PAGES_EVERY: Duration = Duration::from_secs(300);
+const PAGES_TIMEOUT: Duration = Duration::from_secs(60);
 /// A listener that ends is started again after this, doubling each time it ends again, to AGAIN_MAX; one that ran
 /// HEALTHY or delivered a message starts the wait afresh.
 const AGAIN_FIRST: Duration = Duration::from_secs(5);
@@ -69,35 +75,22 @@ struct Agent {
     thread: i64,
 }
 
-/// The agents Talk is on for: the `agents` setting's handles (`@` or not), each once. None: Talk is off.
-fn listed(settings: &Value) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for h in settings["agents"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-        let h = h.trim().trim_start_matches('@').to_lowercase();
-        if words::handle_ok(&h) && !out.contains(&h) {
-            out.push(h);
-        }
-    }
-    out
-}
-
-/// The listed agents to listen for, from `agents.sessions`, one per session; and why the others aren't.
-fn wanted(answer: &Value, listed: &[String]) -> (Vec<Agent>, Vec<String>) {
-    let (mut agents, mut waiting) = (Vec::<Agent>::new(), Vec::new());
-    let here: Vec<&Value> = answer["agents"].as_array().into_iter().flatten().collect();
-    for handle in listed {
-        let Some(a) = here.iter().find(|a| a["handle"].as_str().map(|h| h.trim_start_matches('@')) == Some(handle))
-        else {
-            waiting.push(format!("@{handle} isn't one of this node's agents, or hasn't run here yet"));
-            continue;
-        };
-        let handle = handle.clone();
+/// The agents to listen for, from `agents.sessions`: each whose session published a page, once per session; why a
+/// publisher isn't; and how many agents here haven't published one in their current session.
+fn wanted(answer: &Value, publishers: &BTreeSet<String>) -> (Vec<Agent>, Vec<String>, usize) {
+    let (mut agents, mut waiting, mut others) = (Vec::<Agent>::new(), Vec::new(), 0);
+    for a in answer["agents"].as_array().into_iter().flatten() {
+        let handle = a["handle"].as_str().unwrap_or("").trim_start_matches('@').to_string();
         let session = a["session_id"].as_str().unwrap_or("");
+        if !publishers.contains(session) {
+            others += 1;
+            continue;
+        }
         let thread = a["thread_id"].as_i64().filter(|t| *t > 0);
-        let why = match (session, thread) {
-            ("", _) => Some(format!("@{handle} has no session yet")),
-            (s, _) if !session_ok(s) => Some(format!("@{handle}'s session id {s:?} isn't one Spacesheep takes")),
-            (_, None) => Some(format!("@{handle} has no thread yet")),
+        let why = match (words::handle_ok(&handle), thread) {
+            (false, _) => Some(format!("{:?} isn't a handle", a["handle"])),
+            _ if !session_ok(session) => Some(format!("@{handle}'s session id {session:?} isn't one Spacesheep takes")),
+            (_, None) => Some(format!("@{handle} published a page but has no thread yet")),
             _ if agents.iter().any(|x| x.session == session) => Some(format!("@{handle} shares a session")),
             _ => None,
         };
@@ -106,7 +99,7 @@ fn wanted(answer: &Value, listed: &[String]) -> (Vec<Agent>, Vec<String>) {
             (why, _) => waiting.push(why.unwrap_or_default()),
         }
     }
-    (agents, waiting)
+    (agents, waiting, others)
 }
 
 /// The account's Talk switch, from `spacesheep talk status`.
@@ -160,12 +153,16 @@ struct Listening {
 #[derive(Debug, Clone, Default)]
 struct Status {
     looked: bool,
-    /// The `agents` setting's handles: Talk is on while there's one.
-    listed: Vec<String>,
     cli: Option<String>,
     problem: Option<String>,
     listeners: BTreeMap<String, Listening>,
     waiting: Vec<String>,
+    /// Agents here whose current session hasn't published a page.
+    others: usize,
+    /// The sessions that published a page, as last read; when, and what went wrong reading them.
+    publishers: BTreeSet<String>,
+    pages_at: Option<f64>,
+    pages_problem: Option<String>,
     account: Account,
     account_at: Option<f64>,
     /// The last message: when, and for whom.
@@ -205,10 +202,10 @@ impl Groups {
     }
 }
 
-/// A message to post: in this thread, these words.
+/// A message to post: in this thread, for these agents (`@editor`, as the log says), these words.
 struct Post {
     thread: i64,
-    handle: String,
+    to: String,
     text: String,
 }
 
@@ -311,18 +308,23 @@ fn run_once(
                         h.log(format!("the first message's JSON, as talk listen printed it: {raw}"));
                     }
                     if text.trim().is_empty() {
-                        h.log(format!("a message for @{} with no words: not posted", agent.handle));
+                        h.log(format!("a message on @{}'s page with no words: not posted", agent.handle));
                         continue;
                     }
+                    let called = words::called(&text);
+                    let to = match called.is_empty() {
+                        true => format!("@{}", agent.handle),
+                        false => called.iter().map(|c| format!("@{c}")).collect::<Vec<_>>().join(" "),
+                    };
                     h.log(format!(
-                        "a message for @{} ({} characters): posting it in thread {}",
+                        "a message on @{}'s page for {to} ({} characters): posting it in thread {}",
                         agent.handle,
                         text.chars().count(),
                         agent.thread
                     ));
-                    lock(status).last = Some((now(), agent.handle.clone()));
+                    lock(status).last = Some((now(), to.clone()));
                     let text = words::post(&agent.handle, &text, &agent.session);
-                    let _ = posts.send(Post { thread: agent.thread, handle: agent.handle, text });
+                    let _ = posts.send(Post { thread: agent.thread, to, text });
                     delivered = true;
                     update(status, &session, |l| l.problem = None);
                 }
@@ -368,8 +370,8 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                 match h.request("board.post", json!({"thread_id": post.thread, "text": post.text})) {
                     Ok(answer) => {
                         h.log(format!(
-                            "posted @{}'s message in thread {}: message {}",
-                            post.handle, post.thread, answer["message_id"]
+                            "posted the message for {} in thread {}: message {}",
+                            post.to, post.thread, answer["message_id"]
                         ));
                         last = None;
                         break;
@@ -378,10 +380,10 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                 }
             }
             if let Some(e) = &last {
-                h.log(format!("couldn't post @{}'s message in thread {}: {e}", post.handle, post.thread));
+                h.log(format!("couldn't post the message for {} in thread {}: {e}", post.to, post.thread));
             }
             lock(&status).posted =
-                last.map(|e| format!("a message for @{} didn't reach thread {}: {e}", post.handle, post.thread));
+                last.map(|e| format!("a message for {} didn't reach thread {}: {e}", post.to, post.thread));
         }
     });
     tx
@@ -397,10 +399,12 @@ struct Talk {
     status: Arc<Mutex<Status>>,
     posts: Sender<Post>,
     groups: Option<Arc<Groups>>,
+    state: PathBuf,
     checking: Arc<AtomicBool>,
     checked: Option<Instant>,
-    /// The settings changed: look at the next tick, and read the account's switch again. An atomic, since it's set
-    /// on the thread that reads the node's answers, which a look waits on.
+    scanning: Arc<AtomicBool>,
+    scanned: Option<Instant>,
+    /// The account's switch or the publishers changed (on their own threads): look at the next tick.
     look_now: Arc<AtomicBool>,
 }
 
@@ -411,40 +415,18 @@ impl Talk {
             return g.clone();
         }
         let dir = self.h.node()["state_dir"].as_str().map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        self.state = dir.clone();
         let g = Arc::new(Groups { path: dir.join("listeners.json"), pids: Mutex::default() });
         g.stop_leftovers(&self.h);
         self.groups = Some(g.clone());
         g
     }
 
-    /// Each second: the event (sent only when it's changed), and a look when one is due.
+    /// Each second: the event (sent only when it's changed), the account's switch and the pages when they're due,
+    /// and a look when one is.
     fn tick(&mut self) {
         let groups = self.groups();
         self.event();
-        let started = Instant::now();
-        if self.look_now.swap(false, Ordering::SeqCst) {
-            self.next = started;
-            self.checked = None;
-        }
-        if started < self.next {
-            return;
-        }
-        self.next = started + scaled(EVERY);
-        let listed = listed(&self.h.settings());
-        lock(&self.status).listed = listed.clone();
-        if !listed.is_empty() {
-            self.look(groups, &listed);
-        } else {
-            self.stop_all();
-            let mut st = lock(&self.status);
-            st.problem = None;
-            st.waiting.clear();
-        }
-        lock(&self.status).looked = true;
-        self.event();
-    }
-
-    fn look(&mut self, groups: Arc<Groups>, listed: &[String]) {
         let own = std::env::current_exe().ok();
         let places: Vec<PathBuf> = cli::PLACES.iter().map(PathBuf::from).collect();
         let Some(cli) = cli::find(std::env::var_os("PATH").as_deref(), &places, own.as_deref()) else {
@@ -459,6 +441,36 @@ impl Talk {
             return;
         };
         lock(&self.status).cli = Some(cli.describe());
+        self.check_account(&cli);
+        if lock(&self.status).account == Account::On {
+            self.read_pages(&cli);
+        }
+        let started = Instant::now();
+        if self.look_now.swap(false, Ordering::SeqCst) {
+            self.next = started;
+        }
+        if started < self.next {
+            return;
+        }
+        self.next = started + scaled(EVERY);
+        self.look(groups, cli);
+        lock(&self.status).looked = true;
+        self.event();
+    }
+
+    fn look(&mut self, groups: Arc<Groups>, cli: Cli) {
+        let account = lock(&self.status).account.clone();
+        match account {
+            Account::On => {}
+            // the account couldn't be read: what runs keeps going, and the next read decides
+            Account::Failed(_) => return,
+            // Talk off for the account, the machine signed out, or not read yet: nobody to listen for
+            _ => {
+                self.stop_all();
+                lock(&self.status).problem = None;
+                return;
+            }
+        }
         let answer = match self.h.request("agents.sessions", json!({})) {
             Ok(answer) => answer,
             Err(e) => {
@@ -469,11 +481,13 @@ impl Talk {
                 return;
             }
         };
-        let (agents, waiting) = wanted(&answer, listed);
+        let publishers = lock(&self.status).publishers.clone();
+        let (agents, waiting, others) = wanted(&answer, &publishers);
         {
             let mut st = lock(&self.status);
             st.problem = None;
             st.waiting = waiting;
+            st.others = others;
         }
         let gone: Vec<String> =
             lock(&self.lines).keys().filter(|s| agents.iter().all(|a| &a.session != *s)).cloned().collect();
@@ -508,27 +522,69 @@ impl Talk {
                 (self.h.clone(), cli.clone(), self.posts.clone(), self.status.clone(), groups.clone());
             std::thread::spawn(move || listen(h, cli, line, posts, status, groups));
         }
-        self.check_account(cli);
     }
 
-    /// The account's Talk switch, read now and then on a thread of its own.
-    fn check_account(&mut self, cli: Cli) {
+    /// The account's Talk switch, read every minute on a thread of its own; a change means a look at once.
+    fn check_account(&mut self, cli: &Cli) {
         let recheck = std::mem::take(&mut lock(&self.status).recheck);
         let due = recheck || self.checked.is_none_or(|at| at.elapsed() >= scaled(STATUS_EVERY));
         if !due || self.checking.swap(true, Ordering::SeqCst) {
             return;
         }
         self.checked = Some(Instant::now());
-        let (h, status, checking) = (self.h.clone(), self.status.clone(), self.checking.clone());
+        let (h, status, checking, look_now, cli) =
+            (self.h.clone(), self.status.clone(), self.checking.clone(), self.look_now.clone(), cli.clone());
         std::thread::spawn(move || {
             let got = account(&cli::run(&cli, &["talk", "status"], STATUS_TIMEOUT));
             if let Account::Failed(why) | Account::SignedOut(why) = &got {
                 h.log(format!("talk status: {why}"));
             }
             let mut st = lock(&status);
+            if st.account != got {
+                h.log(format!("the account's Talk: {}", account_words(&got)));
+                look_now.store(true, Ordering::SeqCst);
+            }
             st.account = got;
             st.account_at = Some(now());
             checking.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// Who published the account's pages, read every five minutes on a thread of its own: each page's versions only
+    /// when it has changed (pages.json keeps what's known). New publishers mean a look at once.
+    fn read_pages(&mut self, cli: &Cli) {
+        if self.scanned.is_some_and(|at| at.elapsed() < scaled(PAGES_EVERY))
+            || self.scanning.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        self.scanned = Some(Instant::now());
+        let (h, status, scanning, look_now, cli, file) = (
+            self.h.clone(),
+            self.status.clone(),
+            self.scanning.clone(),
+            self.look_now.clone(),
+            cli.clone(),
+            self.state.join("pages.json"),
+        );
+        std::thread::spawn(move || {
+            let got = publishers(&h, &cli, &file);
+            let mut st = lock(&status);
+            match got {
+                Ok(who) => {
+                    if who != st.publishers {
+                        look_now.store(true, Ordering::SeqCst);
+                    }
+                    st.publishers = who;
+                    st.pages_at = Some(now());
+                    st.pages_problem = None;
+                }
+                Err(why) => {
+                    h.log(format!("reading the pages: {why}"));
+                    st.pages_problem = Some(why);
+                }
+            }
+            scanning.store(false, Ordering::SeqCst);
         });
     }
 
@@ -553,39 +609,62 @@ impl Talk {
         let listening: Vec<&str> = st.listeners.values().filter(|l| l.running).map(|l| l.handle.as_str()).collect();
         self.h.event(
             "spacesheep.talk",
-            json!({"on": !st.listed.is_empty(), "agents": st.listed, "listening": listening, "last_message_at": st.last.as_ref().map(|l| l.0)}),
+            json!({"on": st.account == Account::On, "listening": listening, "last_message_at": st.last.as_ref().map(|l| l.0)}),
         );
     }
 }
 
-const SETTING: &str = "`pointman config set node.extensions.spacesheep.agents '[\"scene\"]'` on this machine (or \
-                       its settings in the app), with the handles of the agents a page may message";
+/// Who published the account's latest pages (`list --json`), each page's versions read only when it has changed.
+fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<BTreeSet<String>, String> {
+    let ran = cli::run(cli, &["list", "--json"], PAGES_TIMEOUT).map_err(|e| e.to_string())?;
+    let list = match ran.code {
+        Some(0) => pages::spaces(&ran.stdout)
+            .ok_or_else(|| format!("`spacesheep list` said {:?}", cli::last_words(&ran.stdout)))?,
+        _ => return Err(format!("`spacesheep list` failed: {}", ran.stderr)),
+    };
+    let mut known = Known::from_json(&std::fs::read_to_string(file).unwrap_or_default());
+    known.0.retain(|id, _| list.iter().any(|s| &s.id == id));
+    let stale: Vec<&pages::Space> = list.iter().filter(|s| known.stale(s)).collect();
+    for space in stale {
+        let ran = cli::run(cli, &["versions", &space.id, "--json"], PAGES_TIMEOUT);
+        match ran.as_ref().ok().filter(|r| r.code == Some(0)).and_then(|r| pages::sessions(&r.stdout)) {
+            Some(who) => {
+                known.0.insert(space.id.clone(), (space.updated_at.clone(), who));
+            }
+            None => h.log(format!(
+                "couldn't read who published page {}: {}",
+                space.id,
+                match ran {
+                    Ok(r) => r.stderr,
+                    Err(e) => e.to_string(),
+                }
+            )),
+        }
+    }
+    let _ = std::fs::write(file, known.to_json());
+    Ok(known.publishers())
+}
 
-/// The parts health shows: the node's switch, the account's, and the listeners.
+/// The account's switch as the log says it.
+fn account_words(a: &Account) -> String {
+    match a {
+        Account::Unknown => "not read yet".into(),
+        Account::On => "on".into(),
+        Account::Off(why) | Account::Failed(why) => why.clone(),
+        Account::SignedOut(_) => "this machine isn't signed in to Spacesheep".into(),
+    }
+}
+
+/// The parts health shows: the account's switch, which is Talk's one switch, and the listeners.
 fn health(st: &Status) -> Value {
     let part = |id: &str, kind: &str, name: &str, state: &str, needs: Vec<&str>, why: String| json!({"id": id, "kind": kind, "name": name, "state": state, "needs": needs, "why": why});
-    let on = !st.listed.is_empty();
-    let switch = match on {
-        true => {
-            let who: Vec<String> = st.listed.iter().map(|h| format!("@{h}")).collect();
-            part("node", "switch", "Talk on this node", "ok", vec![], format!("on for {}", who.join(", ")))
-        }
-        false => part(
-            "node",
-            "switch",
-            "Talk on this node",
-            "stopped",
-            vec![],
-            format!("off: no agent is listed. Turn it on with {SETTING}"),
-        ),
-    };
+    let on = st.account == Account::On;
     let when = st.account_at.map(|at| format!(" (checked at {})", clock(at))).unwrap_or_default();
-    let (state, needs, why) = match (&st.account, on) {
-        (_, false) => ("unknown", vec![], "not checked while Talk is off on this node".to_string()),
-        (Account::Unknown, _) => ("unknown", vec![], "not checked yet".to_string()),
-        (Account::On, _) => ("ok", vec![], format!("Talk is on for the account{when}")),
-        (Account::Off(why), _) => ("failing", vec![], format!("{why}{when}")),
-        (Account::SignedOut(said), _) => (
+    let (state, needs, why) = match &st.account {
+        Account::Unknown => ("unknown", vec![], "not checked yet".to_string()),
+        Account::On => ("ok", vec![], format!("Talk is on for the account{when}")),
+        Account::Off(why) => ("stopped", vec![], format!("{why}{when}")),
+        Account::SignedOut(said) => (
             "failing",
             vec!["auth"],
             format!(
@@ -593,7 +672,7 @@ fn health(st: &Status) -> Value {
                 if said.is_empty() { String::new() } else { format!(": {said}") }
             ),
         ),
-        (Account::Failed(why), _) => ("failing", vec![], format!("{why}{when}")),
+        Account::Failed(why) => ("failing", vec![], format!("{why}{when}")),
     };
     let account = part("account", "account", "Spacesheep account's Talk", state, needs, why);
     let running: Vec<String> = st.listeners.values().filter(|l| l.running).map(|l| format!("@{}", l.handle)).collect();
@@ -604,11 +683,11 @@ fn health(st: &Status) -> Value {
         .filter_map(|l| Some(format!("@{}: {}", l.handle, l.problem.as_deref()?)))
         .collect();
     let last = match &st.last {
-        Some((at, handle)) => format!("; the last message was at {} for @{handle}", clock(*at)),
+        Some((at, to)) => format!("; the last message was at {} for {to}", clock(*at)),
         None => "; no message yet".into(),
     };
-    let (state, why) = if !on {
-        ("stopped", "off on this node".to_string())
+    let (state, why) = if !on && running.is_empty() {
+        ("stopped", format!("not listening: {}", account_words(&st.account)))
     } else if let Some(problem) = &st.problem {
         ("failing", problem.clone())
     } else if let Some(posted) = &st.posted {
@@ -622,17 +701,25 @@ fn health(st: &Status) -> Value {
                 if running.is_empty() { String::new() } else { format!("; listening for {}", running.join(", ")) }
             ),
         )
+    } else if let Some(why) = &st.pages_problem {
+        ("failing", format!("who published the pages couldn't be read: {why}"))
     } else if !running.is_empty() {
-        ("ok", format!("listening for {}{last}", running.join(", ")))
-    } else if !st.looked {
+        ("ok", format!("listening for {} (whose sessions published pages){last}", running.join(", ")))
+    } else if !st.looked || st.pages_at.is_none() {
         ("unknown", "not looked yet".into())
     } else if !st.waiting.is_empty() {
         ("stopped", format!("nobody to listen for: {}", st.waiting.join("; ")))
     } else {
-        ("stopped", "nobody to listen for".into())
+        (
+            "stopped",
+            format!(
+                "nobody to listen for: none of the {} agents here has published a page in its current session",
+                st.others
+            ),
+        )
     };
     let listeners = part("listeners", "listener", "Talk listeners", state, vec![], why);
-    json!([switch, account, listeners])
+    json!([account, listeners])
 }
 
 fn main() -> anyhow::Result<()> {
@@ -641,7 +728,6 @@ fn main() -> anyhow::Result<()> {
     let status = Arc::new(Mutex::new(Status::default()));
     let posts = poster(h.clone(), status.clone());
     let lines = Lines::default();
-    let look_now = Arc::new(AtomicBool::new(false));
     let talk = Arc::new(Mutex::new(Talk {
         h: h.clone(),
         next: Instant::now(),
@@ -649,17 +735,16 @@ fn main() -> anyhow::Result<()> {
         status: status.clone(),
         posts,
         groups: None,
+        state: PathBuf::new(),
         checking: Arc::new(AtomicBool::new(false)),
         checked: None,
-        look_now: look_now.clone(),
+        scanning: Arc::new(AtomicBool::new(false)),
+        scanned: None,
+        look_now: Arc::new(AtomicBool::new(false)),
     }));
 
     let t = talk.clone();
     ext.every(TICK, move |_: &Handle| lock(&t).tick(), "talk");
-
-    // the settings changed (the node may start it again instead): look at the next tick. Never the Talk lock here:
-    // this runs on the thread that reads the node's answers, and a look holds that lock while it waits for one
-    ext.on_settings(move |_: &Handle| look_now.store(true, Ordering::SeqCst));
 
     let st = status.clone();
     ext.method("health.check", move |_| Ok(health(&lock(&st))));
@@ -700,7 +785,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_listed_agents_with_a_session_and_a_thread_are_listened_for() {
+    fn only_agents_whose_session_published_a_page_are_listened_for() {
         let answer = json!({"agents": [
             {"handle": "scene", "client": "claude", "session_id": "s-1", "thread_id": 5},
             {"handle": "quiet", "client": "claude", "session_id": "s-2", "thread_id": 6},
@@ -709,23 +794,19 @@ mod tests {
             {"handle": "odd", "client": "claude", "session_id": "s 5", "thread_id": 8},
             {"handle": "twin", "client": "claude", "session_id": "s-1", "thread_id": 9},
         ]});
-        let settings =
-            json!({"agents": ["scene", "@Fresh", "nowhere", "odd", "twin", "ghost", "scene", "not a handle"]});
-        let names = listed(&settings);
-        assert_eq!(names, ["scene", "fresh", "nowhere", "odd", "twin", "ghost"]);
-        let (agents, waiting) = wanted(&answer, &names);
-        assert_eq!(agents, [Agent { handle: "scene".into(), session: "s-1".into(), thread: 5 }], "not quiet: unlisted");
+        let publishers: BTreeSet<String> = ["s-1", "s-4", "s 5", "s-gone"].map(String::from).into();
+        let (agents, waiting, others) = wanted(&answer, &publishers);
+        assert_eq!(agents, [Agent { handle: "scene".into(), session: "s-1".into(), thread: 5 }], "not quiet: no page");
         assert_eq!(
             waiting,
             [
-                "@fresh has no session yet",
-                "@nowhere has no thread yet",
+                "@nowhere published a page but has no thread yet",
                 "@odd's session id \"s 5\" isn't one Spacesheep takes",
                 "@twin shares a session",
-                "@ghost isn't one of this node's agents, or hasn't run here yet",
             ]
         );
-        assert!(listed(&json!({})).is_empty() && listed(&json!({"agents": []})).is_empty(), "off by default");
+        assert_eq!(others, 2, "quiet and fresh");
+        assert!(wanted(&answer, &BTreeSet::new()).0.is_empty());
     }
 
     #[test]
