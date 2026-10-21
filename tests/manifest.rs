@@ -15,6 +15,11 @@ fn the_manifest_keeps_to_cores_limits() {
         "a binary runs as bin/<id>"
     );
     assert!(!ext["platforms"].as_array().unwrap().is_empty(), "a process says where it runs");
+    let files: Vec<&str> = m["behavior"]["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert_eq!(files, ["references"], "the guide, checker and template go to every run's folder");
+    for f in ["references/pages.md", "references/check.py", "references/template.html"] {
+        assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(f).is_file(), "{f} ships with the behaviour");
+    }
     let skill = m["behavior"]["skill"].as_str().unwrap();
     assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(skill).is_file(), "{skill}");
     assert!(m.get("settings").is_none(), "no settings: the account's Talk switch is the one switch");
