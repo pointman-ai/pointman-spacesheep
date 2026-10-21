@@ -103,11 +103,15 @@ fn remembered_json(r: &Remembered) -> String {
 
 /// Each agent here with a session and a thread, as `agents.sessions` gives them, into what's remembered; and a
 /// session forgotten once it's neither an agent's here nor among the latest pages' publishers (patchbay's review).
-fn remember(r: &mut Remembered, answer: &Value, publishers: &[String]) -> bool {
+/// `publishers` is None until the pages have been read without a problem: until then nothing is forgotten, since an
+/// empty list at a start would forget every finished agent's page.
+fn remember(r: &mut Remembered, answer: &Value, publishers: Option<&[String]>) -> bool {
     let current: Vec<&str> =
         answer["agents"].as_array().into_iter().flatten().filter_map(|a| a["session_id"].as_str()).collect();
     let before = r.len();
-    r.retain(|s, _| current.contains(&s.as_str()) || publishers.contains(s));
+    if let Some(publishers) = publishers {
+        r.retain(|s, _| current.contains(&s.as_str()) || publishers.contains(s));
+    }
     let mut changed = r.len() != before;
     for a in answer["agents"].as_array().into_iter().flatten() {
         let handle = a["handle"].as_str().unwrap_or("").trim_start_matches('@');
@@ -577,8 +581,11 @@ impl Talk {
                 return;
             }
         };
-        let publishers = lock(&self.status).publishers.clone();
-        if remember(&mut self.remembered, &answer, &publishers) {
+        let (publishers, read) = {
+            let st = lock(&self.status);
+            (st.publishers.clone(), st.pages_at.is_some() && st.pages_problem.is_none())
+        };
+        if remember(&mut self.remembered, &answer, read.then_some(publishers.as_slice())) {
             let _ = std::fs::write(self.state.join("agents.json"), remembered_json(&self.remembered));
         }
         let (agents, waiting, others) = wanted(&answer, &publishers, &self.remembered);
@@ -963,15 +970,18 @@ mod tests {
             {"handle": "fresh", "session_id": "s-2", "thread_id": null},
             {"handle": "Bad Name", "session_id": "s-3", "thread_id": 6},
         ]});
-        assert!(remember(&mut r, &answer, &[]));
-        assert!(!remember(&mut r, &answer, &[]), "nothing new the second time");
+        assert!(remember(&mut r, &answer, Some(&[])));
+        assert!(!remember(&mut r, &answer, Some(&[])), "nothing new the second time");
         assert_eq!(r, Remembered::from([("s-1".to_string(), ("scene".to_string(), 5))]));
         assert_eq!(remembered_from(&remembered_json(&r)), r);
         // scene moves on: its old session stays while it published a page, and goes once it's off the latest pages
         let moved = json!({"agents": [{"handle": "scene", "session_id": "s-9", "thread_id": 5}]});
-        remember(&mut r, &moved, &["s-1".to_string()]);
+        remember(&mut r, &moved, Some(&["s-1".to_string()]));
         assert!(r.contains_key("s-1") && r.contains_key("s-9"));
-        assert!(remember(&mut r, &moved, &[]));
+        // before the pages are read (a start), nothing is forgotten
+        remember(&mut r, &moved, None);
+        assert!(r.contains_key("s-1"), "kept until a page read says otherwise");
+        assert!(remember(&mut r, &moved, Some(&[])));
         assert_eq!(r.keys().collect::<Vec<_>>(), ["s-9"]);
     }
 
