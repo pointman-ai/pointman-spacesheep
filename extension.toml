@@ -3,16 +3,17 @@
 # server. Installed on a node, the behaviour goes into every run there, with its rules in each run's allowed tools.
 #
 # Talk (Pointman thread 6914; the spec: https://spacesheep.dev/@james/spacesheep-talk-through-the-pointman-node): a
-# page's Session tab on spacesheep.dev messages the agent session that published it. The process runs
-# `spacesheep talk listen --session <id>` for each agent its `agents` setting lists, and posts each message in the
-# agent's thread, which wakes it. The agent answers there, and on the page with `spacesheep talk reply`. The node
-# names no extension: its `agents.sessions` and `board.post` are generic, and who Talk is on for is this extension's
-# own setting. Nothing changes on Spacesheep's side, and nothing goes into ~/.claude.
+# page's Session tab on spacesheep.dev messages the agent session that published it. While the account's Talk switch
+# is on, the process runs `spacesheep talk listen --session <id>` for each agent here whose session published a page,
+# and posts each message in the agent's thread, which wakes it: or wakes the agents the message starts by calling
+# (`@editor …`), James's call in thread 6914 [16235]. The agent answers there, and on the page with
+# `spacesheep talk reply`. The node names no extension: its `agents.sessions` and `board.post` are generic. Nothing
+# changes on Spacesheep's side, and nothing goes into ~/.claude.
 
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.3.0"
+version = "0.4.0"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
 node = ">=0.1,<1"
@@ -31,19 +32,9 @@ network = true                   # spacesheep.dev, through its CLI
 agents = true                    # agents.sessions: each agent's session and latest thread
 post = true                      # board.post: each message, as a post in the agent's thread
 
-[settings]
-type = "object"
-
-[settings.properties.agents]
-type = "array"
-title = "Talk from pages, for"
-description = "The agents a page's Session tab on spacesheep.dev may message, by handle (scene): each message reaches the agent that published the page, as a post in its thread. Empty: Talk is off on this machine."
-items = { type = "string", pattern = "^@?[a-z0-9][a-z0-9_-]{0,31}$" }
-default = []
-
 [[events]]
 name = "spacesheep.talk"
-description = "Talk on or off on this node, the agents listened for, and when the last message came."
+description = "Talk on or off for the account, the agents listened for, and when the last message came."
 
 # A page's link in a post is a pill in the apps while the workspace runs Spacesheep. Core doesn't look
 # pages up, so its title is the page's name in the link.

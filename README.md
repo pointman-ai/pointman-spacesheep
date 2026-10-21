@@ -3,7 +3,7 @@
 A Pointman extension that has agents write documents, reports and explainers as
 [Spacesheep](https://spacesheep.dev) pages, published with Spacesheep's CLI and opened beside the thread for
 the person they're working for. Spacesheep publishes pages and sites at a URL people open on any device. With
-**Talk** on, a message typed in a page's Session tab reaches the agent that published it, as a post in its
+**Talk** on, a message typed in a page's Session tab reaches the agent that published it (or the agents it starts by calling), as a post in its
 thread, and the agent answers there and on the page.
 
 ```
@@ -14,7 +14,7 @@ pointman add spacesheep
 
 - **A behaviour and a small process:** installed on a node, `SKILL.md`'s body goes into every agent run there,
   whichever agent it is and whether it runs on Claude Code, Codex or Gemini CLI. The process (`bin/spacesheep`,
-  Rust) is only for Talk, and does nothing until Talk is switched on.
+  Rust) is only for Talk, and listens only while the account's Talk switch is on.
 - **What agents do:** anything longer than a post becomes a page, not a Markdown file or a long post, unless
   the person asks for another format. Technical explainers are visual and interactive (diagrams, live examples,
   toggles, tables, and diffs explained beside the code), with few words. A new or updated page opens beside
@@ -34,19 +34,21 @@ Spacesheep's own CLI, as it is (1.26), and nothing goes into `~/.claude`: no hoo
 sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the-pointman-node (Pointman thread
 6914).
 
-- **One switch,** off by default: the `agents` this machine's Talk is on for, by handle
-  (`pointman config set node.extensions.spacesheep.agents '["scene", "editor"]'`, JSON or TOML). An empty list,
-  the default, is Talk off. It's the extension's own setting, so the node names no extension. The account's own
-  Talk switch, at https://spacesheep.dev/settings/talk, has to be on too; the extension never turns it on
-  (`talk on`).
-- **Listening:** every 60 s it reads the node's agents (`agents.sessions`). For each listed one with a session and
-  a thread, it runs `spacesheep talk listen --session <id>` (the machine's `spacesheep`, else
-  `npx -y spacesheep@latest`), signed in with the machine's own key in `~/.config/spacesheep`. A listener that
-  ends (its link gone, Talk off for the account, the CLI failing) starts again after 5 s, doubling to 5 minutes.
-  An agent taken off the list, or with a new session, has its listener stopped. Each listener is a process group of
-  its own, kept in the state folder (`listeners.json`), so a restart stops any left from a crash.
-- **Each message** is a `board.post` in the thread of the agent's latest run, as the machine. Its mention wakes
-  the agent:
+- **One switch:** the account's own, "Talk to your sessions" at https://spacesheep.dev/settings/talk, read every
+  minute (`talk status`). Nothing listens while it's off, and the extension never turns it on (`talk on`). It has
+  no settings of its own (James, thread 6914 [16235]: no list of agents).
+- **Who's listened for:** each agent here whose current session published a page. Every 5 minutes, while Talk is
+  on, it reads the account's latest pages (`spacesheep list --json`) and, for each new or changed one, who pushed
+  its versions (`versions <page> --json`: each version's `pushed_by.session_id`), kept in the state folder
+  (`pages.json`). Every 60 s it reads the node's agents (`agents.sessions`), and for each publisher with a thread
+  it runs `spacesheep talk listen --session <id>` (the machine's `spacesheep`, else `npx -y spacesheep@latest`),
+  signed in with the machine's own key in `~/.config/spacesheep`. So one process per agent that has a page, not
+  one per agent: a node may run dozens. A listener that ends (its link gone, the CLI failing) starts again after
+  5 s, doubling to 5 minutes. An agent with a new session, or Talk turned off, has its listener stopped. Each
+  listener is a process group of its own, kept in the state folder (`listeners.json`), so a restart stops any left
+  from a crash.
+- **Each message** is a `board.post` in the thread of the publisher's latest run, as the machine. Its mention wakes
+  the publisher:
 
   ````
   @scene from spacesheep.dev (Session tab, not signed):
@@ -60,10 +62,14 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
 
   The words are in a code fence longer than any run of backticks in them, so a mention inside wakes nobody (the
   board reads no mention in code). The reply names the session listened for, which is the page's, whatever
-  session the agent wakes in. Spacesheep doesn't document the message's JSON: its words are `text`, else
+  session the agent wakes in.
+- **Calling an agent:** a message that starts with handles (`@editor cut the intro`, `@editor, @scene: …`) is for
+  those agents instead, any agent on the board, in the same thread: "@editor from spacesheep.dev (Session tab of
+  `@scene`'s page, not signed):", the publisher in code so naming it doesn't wake it too. Its reply line still names the page's session, so @editor's answer shows on
+  @scene's page. A handle later in the message stays in the fence. Spacesheep doesn't document the message's JSON: its words are `text`, else
   `message`, else `body`, else the whole JSON, and the first message's JSON goes in the log once.
 - **Trust:** messages come from the account's signed-in spacesheep.dev session, not a passkey, so a stolen web
-  login could message a switched-on agent. Each lands as a visible post saying where it's from, the agent's own
+  login could message any agent while Talk is on. Each lands as a visible post saying where it's from, the agent's own
   permission rules still apply, and `SKILL.md` tells agents to trust such a post only when this machine posted it
   (anyone on the board can type its first line), and to ask in the thread before anything risky.
 
@@ -71,9 +77,8 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
 
 | Part | ok | not ok |
 |---|---|---|
-| `node`: Talk on this node | on for the agents the `agents` setting lists | stopped: it lists nobody |
-| `account`: the account's Talk | `talk status` says `enabled` (read every 10 minutes, and after Spacesheep stops a listener) | failing: Talk off for the account, no Pro or Team plan, or the machine not signed in (`needs: auth`) |
-| `listeners`: Talk listeners | listening for each switched-on agent, with the last message's time | failing: one that keeps ending, the node not answering `agents.sessions`, a post that didn't go out, or no CLI; stopped: nobody to listen for |
+| `account`: the account's Talk, the one switch | `talk status` says `enabled` (read every minute, and after Spacesheep stops a listener) | stopped: Talk off for the account, or no Pro or Team plan; failing: the machine not signed in (`needs: auth`), or `talk status` failing |
+| `listeners`: Talk listeners | listening for each agent here whose session published a page, with the last message's time | failing: one that keeps ending, the node not answering `agents.sessions`, the pages not readable, a post that didn't go out, or no CLI; stopped: Talk off, or no agent here has published a page in its current session |
 
 The `spacesheep.talk` event says whether Talk is on, who's listened for, and when the last message came.
 
@@ -86,17 +91,17 @@ https://spacesheep.dev/settings/api-keys. The CLI keeps the sign-in in `~/.confi
 
 ## Commands and settings
 
-No commands: the guidance and the CLI's own commands are all agents use. One setting per machine, `agents`: the
-handles Talk is on for (none by default).
+No commands: the guidance and the CLI's own commands are all agents use. No settings: the account's Talk switch is
+the one switch.
 
 ## Files
 
 | File | What |
 |---|---|
-| `extension.toml` | The manifest: `[run]` beside `[behavior]`, the permissions (`agents`, `post`, the CLI's rules), the `agents` setting and how the apps draw page links |
+| `extension.toml` | The manifest: `[run]` beside `[behavior]`, the permissions (`agents`, `post`, the CLI's rules) and how the apps draw page links |
 | `SKILL.md` | The guidance, in the standard skill format (frontmatter, then the body), so it works as an ordinary skill outside Pointman too |
 | `src/main.rs` | The process: the looks, the listeners, the posts and health |
-| `src/cli.rs`, `src/said.rs`, `src/words.rs` | Finding and stopping the CLI, reading what `talk listen` prints, and the post's words |
+| `src/cli.rs`, `src/said.rs`, `src/pages.rs`, `src/words.rs` | Finding and stopping the CLI, reading what `talk listen` prints, who published each page, and the post's words (and whom a message calls) |
 | `tests/` | Under the SDK's stand-in node with a fake `spacesheep` (`talk.rs`), the manifest (`manifest.rs`), and the real CLI signed out (`real_cli.rs`, when `SPACESHEEP_REAL_CLI` is npx's folder) |
 
 ## Development

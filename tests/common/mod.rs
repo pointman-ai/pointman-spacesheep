@@ -1,12 +1,12 @@
 //! What the tests share: the extension under the SDK's stand-in node, which answers `agents.sessions` from a
 //! state the test sets and keeps each `board.post`, with a fake `spacesheep` (a shell script that logs each call
 //! beside itself, prints what the test put there for each run of `talk listen`, then listens until it's stopped,
-//! printing whatever the test pushes). No test reaches spacesheep.dev or the board.
+//! printing whatever the test pushes; and answers `talk status`, `list` and `versions` from files the test writes).
+//! No test reaches spacesheep.dev or the board.
 #![allow(dead_code)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -46,6 +46,10 @@ case "$1 $2" in
     done;;
   "talk status")
     if [ -f "$here/status" ]; then cat "$here/status"; else printf '{\n  "pro": true,\n  "enabled": true,\n  "this_machine": false\n}\n'; fi;;
+  "list --json")
+    if [ -f "$here/spaces.json" ]; then cat "$here/spaces.json"; else echo '[]'; fi;;
+  "versions "*)
+    if [ -f "$here/versions.$2.json" ]; then cat "$here/versions.$2.json"; else printf '\n  ✗ no space %s\n\n' "$2" >&2; exit 1; fi;;
   *)
     printf '\n  ✗ unknown command: %s\n\n' "$*" >&2; exit 1;;
 esac
@@ -125,6 +129,25 @@ impl Fake {
         std::fs::write(self.file("status"), text).unwrap();
     }
 
+    /// The account's Talk switch, as `talk status` says it.
+    pub fn talk(&self, on: bool) {
+        self.status(&format!("{{\n  \"pro\": true,\n  \"enabled\": {on}\n}}\n"));
+    }
+
+    /// A page this session published: in `list`, with its versions saying who pushed it.
+    pub fn published(&self, session: &str) {
+        let file = self.file("spaces.json");
+        let mut spaces: Vec<Value> =
+            std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let id = format!("page-{session}");
+        spaces.push(json!({"id": id, "updated_at": "2026-10-21T09:00:00Z", "title": "a page"}));
+        let versions = json!({"space": {"uuid": id}, "versions": [{"number": 1, "pushed_by": {"label": "Claude Code", "session_id": session}}]});
+        std::fs::write(self.file(&format!("versions.{id}.json")), versions.to_string()).unwrap();
+        let tmp = self.file("spaces.json.tmp");
+        std::fs::write(&tmp, Value::Array(spaces).to_string()).unwrap();
+        std::fs::rename(tmp, file).unwrap();
+    }
+
     /// Each call, its words.
     pub fn calls(&self) -> Vec<String> {
         std::fs::read_to_string(self.file("calls.log")).unwrap_or_default().lines().map(String::from).collect()
@@ -157,8 +180,6 @@ pub fn agent(handle: &str, session: &str, thread: i64) -> Value {
 pub struct Board {
     pub agents: Arc<Mutex<Vec<Value>>>,
     pub posts: Arc<Mutex<Vec<Value>>>,
-    /// How long the next `agents.sessions` takes to answer, in ms.
-    pub slow: Arc<AtomicU64>,
 }
 
 impl Board {
@@ -166,11 +187,6 @@ impl Board {
         let b = Board::default();
         *b.agents.lock().unwrap() = agents;
         b
-    }
-
-    /// The next `agents.sessions` answers after this.
-    pub fn slow_next(&self, d: Duration) {
-        self.slow.store(d.as_millis() as u64, Ordering::SeqCst);
     }
 
     pub fn set_agents(&self, agents: Vec<Value>) {
@@ -194,23 +210,20 @@ impl Board {
     }
 }
 
-/// The extension under a stand-in node, with the fake CLI and these settings (Talk on for @scene: `on()`).
+/// The extension under a stand-in node, with the fake CLI and these settings (none: `on()`).
 pub fn spacesheep(fake: &Fake, board: &Board, settings: Value) -> StandIn {
     spacesheep_on(&fake.path_var(), board, settings)
 }
 
 /// The extension under a stand-in node, with this PATH.
 pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn {
-    let (agents, posts, slow) = (board.agents.clone(), board.posts.clone(), board.slow.clone());
+    let (agents, posts) = (board.agents.clone(), board.posts.clone());
     StandIn::new(ROOT)
         .binary(env!("CARGO_BIN_EXE_spacesheep"))
         .settings(settings)
         .env("PATH", path_var)
         .env("POINTMAN_SPACESHEEP_FASTER", FASTER)
-        .method("agents.sessions", move |_| {
-            std::thread::sleep(Duration::from_millis(slow.swap(0, Ordering::SeqCst)));
-            Ok(json!({"agents": *agents.lock().unwrap()}))
-        })
+        .method("agents.sessions", move |_| Ok(json!({"agents": *agents.lock().unwrap()})))
         .method("board.post", move |params: Value| {
             let mut posts = posts.lock().unwrap();
             posts.push(params);
@@ -218,9 +231,9 @@ pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn 
         })
 }
 
-/// Talk on for @scene.
+/// The settings it runs with: it has none, since the account's Talk switch is the one switch.
 pub fn on() -> Value {
-    json!({"agents": ["scene"]})
+    json!({})
 }
 
 /// Waits until `test` passes; whether it did.
