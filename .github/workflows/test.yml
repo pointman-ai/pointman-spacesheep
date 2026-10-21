@@ -16,3 +16,6 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # the page checker agents run before a deploy (references/check.py), on the runner's Python 3
+      - run: python3 -m unittest -q
+        working-directory: references
