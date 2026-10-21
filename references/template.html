@@ -12,6 +12,9 @@
   - A diff: paste `git diff` for one file into its .diff-src, and its notes into .diff-notes, as
     {"from": text on the block's first line, "to": text on its last (optional: else the run of
     changes from "from"), "title", "note"}. Write "<\/script" for any "</script" in the diff.
+  - Plain words in the first screen, the headings and the KPI labels: code names (functions,
+    flags, paths, hashes) go in diffs, code and folded detail.
+  - Colour only what changed, and pair it with a sign (↑ ↓, + −, or a word).
   - A diagram drawn with divs counts as a visual when it has role="img" and an aria-label saying
     what it shows.
   - Sources folded in <details>. "Not checked" last.
@@ -127,15 +130,15 @@ ul.plain li{margin:4px 0}
 
 <section data-ss-section="results">
   <h2 data-ss-id="res-h">Before and after, by case</h2>
-  <p data-ss-id="res-p">Say what the table shows and which cell to look at. Green is better than before, red is worse.</p>
+  <p data-ss-id="res-p">Say what the table shows and which cell to look at. Green ↑ is better than before, red ↓ is worse.</p>
   <div class="scroll-x">
   <table data-ss-id="res-table">
     <thead><tr><th>Case</th><th>Example</th><th>n</th><th>Before</th><th>After</th></tr></thead>
     <tbody>
-      <tr><th scope="row">A word in the title</th><td><code>voltage</code></td><td class="num">470</td><td>88%</td><td class="up">91%</td></tr>
-      <tr><th scope="row">A word in the headline</th><td><code>spacetime</code></td><td class="num">25</td><td>8%</td><td class="up">96%</td></tr>
-      <tr><th scope="row">A word typed short</th><td><code>vltg</code></td><td class="num">470</td><td>68%</td><td class="down">64%</td></tr>
-      <tr class="tot"><th scope="row">All</th><td></td><td class="num">965</td><td>67%</td><td class="up">78%</td></tr>
+      <tr><th scope="row">A word in the title</th><td>“voltage”</td><td class="num">470</td><td>88%</td><td class="up">↑ 91%</td></tr>
+      <tr><th scope="row">A word in the headline</th><td>“spacetime”</td><td class="num">25</td><td>8%</td><td class="up">↑ 96%</td></tr>
+      <tr><th scope="row">A word typed short</th><td>“vltg”</td><td class="num">470</td><td>68%</td><td class="down">↓ 64%</td></tr>
+      <tr class="tot"><th scope="row">All</th><td></td><td class="num">965</td><td>67%</td><td class="up">↑ 78%</td></tr>
     </tbody>
   </table>
   </div>
@@ -182,7 +185,7 @@ diff --git a/src/suggest.js b/src/suggest.js
   <h2 data-ss-id="plan-h">What's left to ship</h2>
   <p data-ss-id="plan-p">One sentence on the plan and how long it takes.</p>
   <ol class="steps" data-ss-id="plan-steps">
-    <li><b>Column</b><span>Add <code>pages.headline</code>, written when a page is indexed.</span></li>
+    <li><b>Column</b><span>Add a headline column, written when a page is indexed.</span></li>
     <li><b>Backfill</b><span>A job fills it for every page, 50 at a time.</span></li>
     <li><b>Check</b><span>The tests, then the bench again on the branch.</span></li>
   </ol>
