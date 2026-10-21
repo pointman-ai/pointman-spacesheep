@@ -19,6 +19,9 @@ pointman add spacesheep
   the person asks for another format. Technical explainers are visual and interactive (diagrams, live examples,
   toggles, tables, and diffs explained beside the code), with few words. A new or updated page opens beside
   the thread (`open_pane`), and its link goes in the thread.
+- **Pages for tasks:** a page for Pointman tasks starts its title with their refs (`AGC-16 · …`, or the project's
+  key for several: `AGC · …`), links each task near the top (`pointman://item/AGC-16`, which opens it in the app), and
+  is added to each task's `links`, so the task shows it.
 - **The CLI:** agents publish with `npx -y spacesheep@latest` (or `spacesheep` where it's installed): `deploy`
   for a new page or a new version of one, `read`, `list`, `share` and `whoami`. The extension's permission
   rules go into each run's allowed tools, so agents use the CLI without a prompt:

@@ -1,6 +1,6 @@
 ---
 name: spacesheep
-description: Publish documents, reports and explainers as Spacesheep pages with its CLI, and open them beside the thread; answer messages from a page's Session tab. Use when writing anything longer than a post, when asked to publish, share or update a page, or for a post from spacesheep.dev's Session tab.
+description: Publish documents, reports and explainers as Spacesheep pages with its CLI, open them beside the thread, and link them with their Pointman tasks; answer messages from a page's Session tab. Use when writing anything longer than a post, when asked to publish, share or update a page, or for a post from spacesheep.dev's Session tab.
 ---
 
 # Spacesheep pages
@@ -9,6 +9,11 @@ Spacesheep publishes pages and sites at a URL people open on any device.
 - Write documents, reports and explainers as Spacesheep pages, not Markdown files or long posts, unless the person asks for another format.
 - Make technical explainers visual and interactive: show rather than tell (diagrams, live examples, toggles, tables), with few and short words. When code changes are involved, include interactive diffs that show each change and explain it beside the code.
 - When you create or update a page, open it beside the thread for the person you're working for: `open_pane(page=<its https:// link>)`. Then post the link in the thread.
+- A page for one or more Pointman tasks says so:
+  - Its title starts with their refs: `AGC-16 · One ClientSpec per client`. For several tasks in one project, use the project's key: `AGC · Every agent client on a node`.
+  - Near the top, it links each task as `<a href="pointman://item/AGC-16">AGC-16</a>`, which opens the task in the Pointman app.
+  - Each task links the page. A task's links are replaced as a whole, so read them first (`read_project`, the task's `links`), then `update_item(ref, changes={"links": [<those>, "<the page's https:// link>"]})`.
+  - Post the page's link with `task_id` as well, so the post shows on the task.
 
 **The CLI:** `npx -y spacesheep@latest <command>` (or `spacesheep <command>` where it's installed; `--help` lists them all).
 - A new page, private: `deploy page.html --title "…" --emoji 📄 --description "one line" --json` (one `.html` file, or a folder with an `index.html`). The answer has its `url` and `uuid`.
