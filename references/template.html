@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ABC-1 · The change, in a few words</title>
+<!--
+  A starter for a technical page. Replace the words and keep the shape:
+  - The answer first: the lead says what you found or changed, the KPI tiles give its numbers.
+  - One section per change or finding: a heading that says what it shows, one or two sentences,
+    then a visual (a table, a diff, a list, a figure).
+  - A diff: paste `git diff` for one file into its .diff-src, and its notes into .diff-notes, as
+    {"from": text on the block's first line, "to": text on its last (optional: else the run of
+    changes from "from"), "title", "note"}. Write "<\/script" for any "</script" in the diff.
+  - A diagram drawn with divs counts as a visual when it has role="img" and an aria-label saying
+    what it shows.
+  - Sources folded in <details>. "Not checked" last.
+  Check it before you deploy: python3 check.py page.html (check.py is beside this template).
+-->
+<style>
+:root{
+  --bg:#fff; --ink:#1b1b22; --ink2:#46464f; --muted:#6a6a73; --line:#e3e3e8; --code:#f6f6f8;
+  --acc:#2563eb; --acc-soft:#e6efff; --link:#1c5cab;
+  --good:#dff3e6; --good-ink:#14612c; --bad:#fbe3e1; --bad-ink:#a3261a;
+  --add:#e9f6ec; --del:#fcecea; --hl:#fff0c2; --hlbar:#c98500; --badge:#fff8e0; --pop:#fff;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#121317; --ink:#e8e9ee; --ink2:#c2c4cc; --muted:#9a9ca6; --line:#2c2e36; --code:#1a1c22;
+    --acc:#7aa7ff; --acc-soft:#1f2a44; --link:#8db4ff;
+    --good:#173324; --good-ink:#7ad69a; --bad:#3a1d1b; --bad-ink:#f19a8f;
+    --add:#15291c; --del:#331b1a; --hl:#3d3313; --hlbar:#d9a43a; --badge:#2d2714; --pop:#1d1f26;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+main{max-width:980px;margin:0 auto;padding:0 32px 80px}
+header{padding:40px 0 4px}
+.kicker{font-size:14px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+h1{font-size:40px;line-height:1.15;margin:0 0 12px;letter-spacing:-.01em}
+h2{font-size:27px;line-height:1.25;margin:52px 0 8px}
+h3{font-size:19px;margin:28px 0 6px}
+p{margin:0 0 12px}
+.lead{font-size:20px;color:var(--ink2);max-width:760px}
+a{color:var(--link)}
+code{font:0.88em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+.cap{font-size:14px;color:var(--muted);margin:8px 0 0}
+/* kpis */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0 8px}
+.kpi{border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+.kpi .v{font-size:30px;font-weight:700;line-height:1.1}
+.kpi .v small{font-size:17px;font-weight:500;color:var(--muted)}
+.kpi .l{font-size:14px;color:var(--ink2);margin-top:4px}
+/* tables */
+.scroll-x{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+thead th{font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:650}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+td.up{background:var(--good);color:var(--good-ink);font-weight:650}
+td.down{background:var(--bad);color:var(--bad-ink);font-weight:650}
+tr.tot th,tr.tot td{border-top:2px solid var(--ink2)}
+/* steps */
+ol.steps{list-style:none;padding:0;margin:12px 0;display:grid;gap:10px;counter-reset:s}
+ol.steps li{display:grid;grid-template-columns:34px 170px 1fr;gap:12px;align-items:baseline;border:1px solid var(--line);border-radius:8px;padding:10px 14px;counter-increment:s}
+ol.steps li::before{content:counter(s);display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--acc-soft);color:var(--acc);font-weight:700}
+ol.steps b{font-weight:650}
+/* diff */
+.diff{position:relative;margin-top:10px}
+.diff-key{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:14px;color:var(--ink2);margin:0 0 8px}
+.diff-key span{display:inline-flex;align-items:center;gap:6px}
+.diff-key .file{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink)}
+.diff-key i{font-style:normal;font-weight:700;display:inline-grid;place-items:center;width:20px;height:20px;border-radius:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.diff-key .k-add{background:var(--add);color:var(--good-ink)}
+.diff-key .k-del{background:var(--del);color:var(--bad-ink)}
+.diff-err{color:var(--bad-ink);font-size:14px;margin:0 0 8px}
+.diff-scroll{background:var(--code);border:1px solid var(--line);border-radius:6px;overflow-x:auto;outline:none}
+.diff-scroll:focus-visible{box-shadow:0 0 0 3px var(--acc-soft)}
+.diff-scroll pre{margin:0;padding:6px 0;display:inline-block;min-width:100%;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--ink)}
+.dl{display:block;white-space:pre;padding-right:16px}
+.dl.gap{color:var(--muted);padding-left:7.5em;background:var(--line)}
+.dl .bn{display:inline-grid;place-items:center;width:1.7em;margin:0 2px 0 6px;font:700 11px/1 ui-sans-serif,-apple-system,sans-serif;user-select:none;vertical-align:1px}
+.dl .bn:not(:empty){height:1.5em;border:1px solid var(--hlbar);border-radius:999px;background:var(--badge)}
+.dl .o,.dl .n{display:inline-block;width:2.6em;text-align:right;color:var(--muted);user-select:none}
+.dl .s{display:inline-block;width:1.8em;text-align:center;font-weight:700;user-select:none}
+.dl.add{background:var(--add)}.dl.add .s{color:var(--good-ink)}
+.dl.del{background:var(--del)}.dl.del .s{color:var(--bad-ink)}
+.dl[data-b]{cursor:help}
+.dl.active{background:var(--hl)}
+.note{position:absolute;left:8px;right:8px;max-width:600px;background:var(--pop);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font-size:15px;line-height:1.45;box-shadow:0 6px 18px rgba(0,0,0,.18);display:none;z-index:3;pointer-events:none}
+.note .w,.all-notes .w{display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.note .h{display:block;font-weight:700;margin-bottom:2px}
+.all-notes{margin-top:10px;font-size:15px}
+.all-notes summary,.sources summary{cursor:pointer;min-height:44px;display:flex;align-items:center}
+.all-notes summary{color:var(--ink2)}
+summary::before{content:"▸";width:1.2em;color:var(--muted)}
+details[open]>summary::before{content:"▾"}
+.all-notes ol{padding-left:0;list-style:none;display:grid;gap:10px}
+ul.plain{padding-left:20px;margin:6px 0}
+ul.plain li{margin:4px 0}
+.sources{margin-top:52px;font-size:15px;color:var(--ink2)}
+.sources summary{font-weight:650;color:var(--ink)}
+@media (max-width:640px){
+  main{padding:0 18px 60px}
+  h1{font-size:30px}
+  h2{font-size:23px;margin-top:40px}
+  .lead{font-size:18px}
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  ol.steps li{grid-template-columns:34px 1fr}
+  ol.steps li span{grid-column:2}
+}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="kicker" data-ss-id="kicker">Project · plan for review · <time datetime="2026-10-21">21 Oct 2026</time> · <a href="pointman://item/ABC-1">ABC-1</a></p>
+  <h1 data-ss-id="title">ABC-1 · The change, in a few words</h1>
+  <p class="lead" data-ss-id="lead">The answer first: what you found or changed. Then what it means for the reader, in one more sentence.</p>
+  <div class="kpis" data-ss-id="kpis">
+    <div class="kpi"><div class="v">97% <small>from 3%</small></div><div class="l">The number that matters most</div></div>
+    <div class="kpi"><div class="v">3% <small>from 16%</small></div><div class="l">The cost that came down</div></div>
+    <div class="kpi"><div class="v">35 <small>of 35</small></div><div class="l">Tests passing</div></div>
+    <div class="kpi"><div class="v">2–3 h</div><div class="l">Left to ship</div></div>
+  </div>
+</header>
+
+<section data-ss-section="results">
+  <h2 data-ss-id="res-h">Before and after, by case</h2>
+  <p data-ss-id="res-p">Say what the table shows and which cell to look at. Green is better than before, red is worse.</p>
+  <div class="scroll-x">
+  <table data-ss-id="res-table">
+    <thead><tr><th>Case</th><th>Example</th><th>n</th><th>Before</th><th>After</th></tr></thead>
+    <tbody>
+      <tr><th scope="row">A word in the title</th><td><code>voltage</code></td><td class="num">470</td><td>88%</td><td class="up">91%</td></tr>
+      <tr><th scope="row">A word in the headline</th><td><code>spacetime</code></td><td class="num">25</td><td>8%</td><td class="up">96%</td></tr>
+      <tr><th scope="row">A word typed short</th><td><code>vltg</code></td><td class="num">470</td><td>68%</td><td class="down">64%</td></tr>
+      <tr class="tot"><th scope="row">All</th><td></td><td class="num">965</td><td>67%</td><td class="up">78%</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="res-cap">Where the numbers come from: the run, its date and its size.</p>
+</section>
+
+<section data-ss-section="fix1">
+  <h2 data-ss-id="f1-h">Fix 1: the headline counts too</h2>
+  <p data-ss-id="f1-p">One or two sentences: what changed and why.</p>
+  <div class="diff" data-ss-id="f1-diff">
+<script type="text/plain" class="diff-src">
+diff --git a/src/suggest.js b/src/suggest.js
+--- a/src/suggest.js
++++ b/src/suggest.js
+@@ -12,8 +12,13 @@ export function rank(index, query) {
+   const q = norm(query);
+   const out = [];
+   for (const page of index.pages) {
+-    const score = matchTitle(q, page.title);
++    // the title first, then the headline when the title misses
++    const score = Math.max(
++      matchTitle(q, page.title),
++      0.8 * matchTitle(q, page.headline || ""),
++    );
+     if (score > 0) out.push({ page, score });
+   }
+-  return out.sort((a, b) => b.score - a.score);
++  // ties go to the page opened last
++  return out.sort((a, b) => b.score - a.score || b.page.openedAt - a.page.openedAt);
+ }
+</script>
+<script type="application/json" class="diff-notes">
+[
+  {"from": "-    const score = matchTitle", "title": "The headline counts too",
+   "note": "A page whose title misses can still match on its headline. A headline match scores 0.8 of a title match, so title matches stay first."},
+  {"from": "-  return out.sort", "title": "Ties go to the page opened last",
+   "note": "Two pages with the same score came back in index order. Now the one opened last comes first."}
+]
+</script>
+  </div>
+</section>
+
+<section data-ss-section="plan">
+  <h2 data-ss-id="plan-h">What's left to ship</h2>
+  <p data-ss-id="plan-p">One sentence on the plan and how long it takes.</p>
+  <ol class="steps" data-ss-id="plan-steps">
+    <li><b>Column</b><span>Add <code>pages.headline</code>, written when a page is indexed.</span></li>
+    <li><b>Backfill</b><span>A job fills it for every page, 50 at a time.</span></li>
+    <li><b>Check</b><span>The tests, then the bench again on the branch.</span></li>
+  </ol>
+</section>
+
+<details class="sources" data-ss-id="sources"><summary>Sources</summary>
+  <ul class="plain">
+    <li>The branch and its commits, and how many tests pass.</li>
+    <li>Where each number comes from: the run, its date, its size.</li>
+    <li>The thread: <a href="pointman://thread/1">Pointman thread</a>.</li>
+  </ul>
+</details>
+
+<section data-ss-section="limits">
+  <h2 data-ss-id="lim-h">Not checked</h2>
+  <ul class="plain" data-ss-id="lim-list">
+    <li>What you didn't run, measure or read, one line each.</li>
+    <li>Where the numbers could differ from what people will see.</li>
+  </ul>
+</section>
+</main>
+<script>
+// each .diff: its .diff-src (a unified diff of one file) drawn as lines, and its .diff-notes as
+// numbered blocks, each note shown on hover, on tap (pinned until the next tap) and on arrow keys
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+document.querySelectorAll(".diff").forEach((wrap) => {
+  const lines = wrap.querySelector(".diff-src").textContent.replace(/^\n+|\n+$/g, "").split("\n");
+  const notes = JSON.parse(wrap.querySelector(".diff-notes")?.textContent || "[]");
+  const file = (lines.find((l) => l.startsWith("+++ ")) || "").replace(/^\+\+\+ (b\/)?/, "");
+  const body = lines.slice(Math.max(0, lines.findIndex((l) => l.startsWith("@@"))));
+  const changed = (l) => /^[+-]/.test(l);
+
+  // each note's lines: from its "from" line to its "to" line, or to the end of that run of changes
+  const blockOf = new Map(), errors = [], spans = [];
+  let after = 0;
+  notes.forEach((n, i) => {
+    const a = body.findIndex((l, k) => k >= after && !l.startsWith("@@") && l.includes(n.from));
+    if (a < 0) return errors.push(`Note ${i + 1}: no line after note ${i} has “${n.from}”.`);
+    let b = n.to ? body.findIndex((l, k) => k >= a && l.includes(n.to)) : a;
+    if (b < 0) { errors.push(`Note ${i + 1}: no line from its start has “${n.to}”.`); b = a; }
+    if (!n.to) while (b + 1 < body.length && changed(body[b + 1])) b++;
+    for (let k = a; k <= b; k++) blockOf.set(k, spans.length);
+    spans.push({ a, b, n });
+    after = b + 1;
+  });
+
+  const rows = [], numbers = spans.map(() => [[], []]); // each block's old and new line numbers
+  let old = 0, now = 0;
+  body.forEach((line, k) => {
+    if (line.startsWith("@@")) {
+      [old, now] = line.split(" ").slice(1, 3).map((p) => parseInt(p.slice(1), 10));
+      if (k) rows.push('<span class="dl gap" aria-hidden="true">⋯</span>');
+      return;
+    }
+    if (line.startsWith("\\")) return; // "\ No newline at end of file"
+    const sign = line[0] === "+" || line[0] === "-" ? line[0] : " ";
+    const o = sign === "+" ? "" : old++, n = sign === "-" ? "" : now++;
+    const b = blockOf.get(k);
+    if (b !== undefined) numbers[b][sign === "-" ? 0 : 1].push(sign === "-" ? o : n);
+    const badge = b !== undefined && spans[b].a === k ? b + 1 : "";
+    rows.push(`<span class="dl ${{ "+": "add", "-": "del" }[sign] || "ctx"}"${b !== undefined ? ` data-b="${b}"` : ""}>` +
+      `<span class="bn" aria-hidden="true">${badge}</span><span class="o" aria-hidden="true">${o}</span>` +
+      `<span class="n" aria-hidden="true">${n}</span><span class="s" aria-hidden="true">${sign === "-" ? "−" : sign.trim()}</span>` +
+      `<span class="c">${esc(line.slice(1)) || " "}</span></span>`);
+  });
+  const blocks = spans.map(({ a, b, n }, i) => {
+    const kinds = new Set(body.slice(a, b + 1).map((l) => l[0]));
+    const what = kinds.size === 1 && kinds.has("-") ? "removed" : kinds.size === 1 && kinds.has("+") ? "added" : "changed";
+    const nums = numbers[i][1].length ? numbers[i][1] : numbers[i][0]; // the new file's, else the old's
+    return { where: `Line${nums.length > 1 ? "s" : ""} ${nums[0]}${nums.length > 1 ? "–" + nums[nums.length - 1] : ""} · ${what}`, title: `${i + 1}. ${n.title}`, note: n.note };
+  });
+
+  wrap.insertAdjacentHTML("beforeend",
+    (errors.length ? `<p class="diff-err">${errors.map(esc).join("<br>")}</p>` : "") +
+    `<div class="diff-key" aria-hidden="true">${file ? `<span class="file">${esc(file)}</span>` : ""}<span><i class="k-del">−</i>removed</span><span><i class="k-add">+</i>added</span>${blocks.length ? "<span>hover or tap a numbered block for its note</span>" : ""}</div>` +
+    `<div class="diff-scroll" tabindex="0" role="group" aria-label="Diff of ${esc(file || "the change")}. Use the up and down arrow keys to read each block's note."><pre>${rows.join("")}</pre></div>` +
+    `<div class="note" role="status" aria-live="polite"><span class="w"></span><span class="h"></span><span class="t"></span></div>`);
+  if (blocks.length) wrap.insertAdjacentHTML("afterend",
+    `<details class="all-notes"><summary>All notes for this diff</summary><ol>${blocks.map((b) =>
+      `<li><span class="w">${esc(b.where)}</span><b>${esc(b.title)}</b><br>${esc(b.note)}</li>`).join("")}</ol></details>`);
+
+  const scroll = wrap.querySelector(".diff-scroll"), note = wrap.querySelector(".note");
+  const [where, head, text] = ["w", "h", "t"].map((c) => note.querySelector(`.${c}`));
+  const linesOf = (b) => [...wrap.querySelectorAll(`.dl[data-b="${b}"]`)];
+  let active = -1, pinned = false;
+  const show = (b) => {
+    wrap.querySelectorAll(".dl.active").forEach((l) => l.classList.remove("active"));
+    active = b;
+    const ls = linesOf(b);
+    ls.forEach((l) => l.classList.add("active"));
+    where.textContent = blocks[b].where; head.textContent = blocks[b].title; text.textContent = blocks[b].note;
+    note.style.display = "block";
+    // under the block, or above it when that would run past the end of the diff
+    const box = wrap.getBoundingClientRect();
+    const below = ls[ls.length - 1].getBoundingClientRect().bottom - box.top + 4;
+    const above = ls[0].getBoundingClientRect().top - box.top - note.offsetHeight - 4;
+    note.style.top = `${below + note.offsetHeight > box.height + 40 && above > 0 ? above : below}px`;
+  };
+  const hide = () => { wrap.querySelectorAll(".dl.active").forEach((l) => l.classList.remove("active")); active = -1; pinned = false; note.style.display = "none"; };
+  const blockAt = (e) => { const l = e.target.closest(".dl[data-b]"); return l ? +l.dataset.b : -1; };
+  scroll.addEventListener("pointerover", (e) => { if (e.pointerType !== "mouse" || pinned) return; const b = blockAt(e); if (b < 0) return hide(); if (b !== active) show(b); });
+  wrap.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && !pinned) hide(); });
+  scroll.addEventListener("click", (e) => { const b = blockAt(e); if (b < 0 || (pinned && active === b)) return hide(); show(b); pinned = true; });
+  document.addEventListener("click", (e) => { if (pinned && !wrap.contains(e.target)) hide(); });
+  scroll.addEventListener("keydown", (e) => {
+    if (!blocks.length) return;
+    if (e.key === "ArrowDown") { show(Math.min(blocks.length - 1, active + 1)); pinned = true; e.preventDefault(); }
+    if (e.key === "ArrowUp") { show(Math.max(0, active - 1)); pinned = true; e.preventDefault(); }
+    if (e.key === "Escape") hide();
+  });
+  scroll.addEventListener("scroll", () => { if (active >= 0) show(active); });
+});
+</script>
+</body>
+</html>
