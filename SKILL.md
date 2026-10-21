@@ -8,6 +8,13 @@ description: Publish documents, reports and explainers as Spacesheep pages with 
 Spacesheep publishes pages and sites at a URL people open on any device.
 - Write documents, reports and explainers as Spacesheep pages, not Markdown files or long posts, unless the person asks for another format.
 - Make technical explainers visual and interactive: show rather than tell (diagrams, live examples, toggles, tables), with few and short words. When code changes are involved, include interactive diffs that show each change and explain it beside the code.
+- **Write a page people take in.** Read `references/pages.md` before your first page, and start from `references/template.html`. In short:
+  - Answer first: the first 150 words say what this is, the result or decision, and what you need from the reader, with a picture of it.
+  - Each section: a heading that states its point, 1–2 sentences, then its visual (a table, diagram, chart, diff or numbered steps). A visual at least every 120 words.
+  - Keep it short: sentences of at most 25 words (20 in a step), paragraphs of at most 60 words, table cells of at most 10 words, at most 4 KPI tiles.
+  - Use the reader's words. No code names in the lead, headings or KPI labels: keep them for diffs and folded detail.
+  - Fold detail, raw output and sources in `<details>`. End with what wasn't checked, as a short list. Nothing moves on its own.
+  - Before every deploy, run `python3 <this behaviour's folder>/references/check.py <your page>`, and fix what fails.
 - When you create or update a page, open it beside the thread for the person you're working for: `open_pane(page=<its https:// link>)`. Then post the link in the thread.
 - A page for one or more Pointman tasks says so:
   - Its title starts with their refs: `AGC-16 · One ClientSpec per client`. For several tasks in one project, use the project's key: `AGC · Every agent client on a node`.

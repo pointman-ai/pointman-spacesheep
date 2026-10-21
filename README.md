@@ -107,6 +107,7 @@ the one switch.
 |---|---|
 | `extension.toml` | The manifest: `[run]` beside `[behavior]`, the permissions (`agents`, `post`, the CLI's rules) and how the apps draw page links |
 | `SKILL.md` | The guidance, in the standard skill format (frontmatter, then the body), so it works as an ordinary skill outside Pointman too |
+| `references/` | Shipped with the behaviour and handed to every run: `pages.md` (how to write a page people take in: 15 researched rules with sources), `check.py` (the checker agents run before each deploy; `python3 -m unittest` runs its tests) and `template.html` (a starter that passes it) |
 | `src/main.rs` | The process: the looks, the listeners, the posts and health |
 | `src/cli.rs`, `src/said.rs`, `src/pages.rs`, `src/words.rs` | Finding and stopping the CLI, reading what `talk listen` prints, who published each page, and the post's words (and whom a message calls) |
 | `tests/` | Under the SDK's stand-in node with a fake `spacesheep` (`talk.rs`), the manifest (`manifest.rs`), and the real CLI signed out (`real_cli.rs`, when `SPACESHEEP_REAL_CLI` is npx's folder) |
