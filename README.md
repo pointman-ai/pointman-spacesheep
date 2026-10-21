@@ -68,10 +68,13 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   board reads no mention in code). The reply names the session listened for, which is the page's, whatever
   session the agent wakes in.
 - **Pages whose agent has finished** (despawned, or moved on to a new session): the extension remembers each
-  agent's session and thread (`agents.json` in the state folder) and keeps listening on the 10 such pages changed
-  most recently. A message there that calls agents reaches them, in the page's remembered thread or else their own;
-  one that calls nobody gets a reply on the page saying the agent has finished and how to ask another.
-- **The header says where it was written:** Spacesheep's `asked_in`, "a comment on the page", else the Session tab.
+  agent's session and thread (`agents.json` in the state folder, pruned to sessions still behind a recent page) and
+  keeps listening on the 10 such pages changed most recently. Only sessions an agent here once had count: every node
+  reads the same account's pages, so another node's agents and the person's own sessions are left alone. A message
+  there that calls agents reaches them, in the page's thread; one that calls nobody gets a reply on the page saying
+  the agent has finished and how to ask another.
+- **The header says where it was written, in fixed words:** "a comment on the page" when Spacesheep's `asked_in` says
+  exactly that, else the Session tab. Nothing of Spacesheep's goes outside the fence.
 - **Comments:** a comment on a page that mentions `@session` is Spacesheep's own way to ask the session that made
   the page: it arrives as a Talk message, and the agent's `talk reply` is posted under the comment. Only the page's
   owner can ask (Spacesheep's rule), so someone else's comment can't wake an agent. No sign-in beyond the machine's.

@@ -270,23 +270,19 @@ fn a_finished_agents_page_reaches_only_the_agents_it_calls() {
 }
 
 #[test]
-fn a_page_whose_agent_was_never_seen_reaches_a_called_agent_in_its_own_thread() {
+fn pages_no_agent_here_ever_had_are_left_to_their_own_node() {
+    // every node reads the account's pages: s-nixos is an agent alive on another node, s-james James's own session
     let (fake, board) = (Fake::new(), Board::with(vec![agent("editor", "s-e", 50)]));
-    fake.published("s-old");
-    fake.prints("s-old", &format!("{}\n", json!({"text": "@pointman.editor look at this"})));
+    fake.published("s-nixos");
+    fake.published("s-james");
+    fake.prints("s-nixos", &format!("{}\n", json!({"text": "@pm.editor look at this"})));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 
-    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
-    assert_eq!(got.len(), 1, "{}", node.log());
-    assert_eq!(got[0]["thread_id"], 50, "editor's own thread: nobody remembers the page's");
-    let text = got[0]["text"].as_str().unwrap();
-    assert!(
-        text.starts_with("@editor from spacesheep.dev (Session tab of a page whose agent has finished, not signed):")
-    );
-    assert!(text.ends_with("`spacesheep talk reply --session s-old \"…\"`"), "the reply goes to the page: {text}");
-    let health = node.call("health.check", json!({})).unwrap();
-    let why = part(&health, "listeners")["why"].as_str().unwrap().to_string();
-    assert!(why.contains("1 page whose agent has finished"), "{why}");
+    assert!(wait(WITHIN, || fake.calls().iter().any(|c| c.starts_with("versions page-s-james"))), "{}", node.log());
+    std::thread::sleep(Duration::from_secs(3)); // looks after the pages were read
+    assert_eq!((fake.listens("s-nixos"), fake.listens("s-james")), (0, 0), "{:?}", fake.calls());
+    assert!(board.posts().is_empty());
+    assert!(!fake.calls().iter().any(|c| c.starts_with("talk reply")), "no 'has finished' on pages that aren't ours");
 }
 
 #[test]

@@ -52,28 +52,26 @@ pub fn called(text: &str) -> Vec<String> {
     out
 }
 
-/// Where a message was written, as a post's header says it: Spacesheep's `asked_in` ("a comment on the page"), else
-/// the Session tab; and whose page it is (`whose`) when the post isn't for that page's own agent.
+/// Where a message was written, as a post's header says it, in fixed words only, since the header is outside the
+/// fence: "a comment on the page" when Spacesheep's `asked_in` says exactly that, else the Session tab; and whose page
+/// it is (`whose`) when the post isn't for that page's own agent.
 pub fn place(via: Option<&str>, whose: Option<&str>) -> String {
-    let base = via.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("Session tab");
-    match whose {
-        None => base.to_string(),
-        Some(w) if base.contains("the page") => base.replacen("the page", w, 1),
-        Some(w) => format!("{base} of {w}"),
+    let comment = via.map(str::trim) == Some("a comment on the page");
+    match (comment, whose) {
+        (true, None) => "a comment on the page".into(),
+        (true, Some(w)) => format!("a comment on {w}"),
+        (false, None) => "Session tab".into(),
+        (false, Some(w)) => format!("Session tab of {w}"),
     }
 }
 
 /// The post a message from a page becomes: the mentions of the agents it's for (`to`, which wakes them), the words
-/// fenced, and how to answer. `publisher` is the page's agent, None when it has finished and nobody knows its name.
-/// The reply names the session the page talks to, the publisher's, whichever agent answers and whatever session it
-/// wakes in.
-pub fn post(to: &[String], publisher: Option<&str>, text: &str, session: &str, via: Option<&str>) -> String {
-    let own = matches!(to, [one] if Some(one.as_str()) == publisher);
+/// fenced, and how to answer. `publisher` is the page's agent. The reply names the session the page talks to, the
+/// publisher's, whichever agent answers and whatever session it wakes in.
+pub fn post(to: &[String], publisher: &str, text: &str, session: &str, via: Option<&str>) -> String {
+    let own = matches!(to, [one] if one == publisher);
     // the publisher in code, so naming it doesn't wake it too
-    let whose = match publisher {
-        Some(p) => format!("`@{p}`'s page"),
-        None => "a page whose agent has finished".to_string(),
-    };
+    let whose = format!("`@{publisher}`'s page");
     let page = place(via, (!own).then_some(whose.as_str()));
     let to = to.iter().map(|h| format!("@{h}")).collect::<Vec<_>>().join(" ");
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
@@ -120,7 +118,7 @@ mod tests {
 
     /// As the listener posts a message on `publisher`'s own page, from its Session tab.
     fn post_on(publisher: &str, text: &str, session: &str) -> String {
-        post(&recipients(text, publisher), Some(publisher), text, session, None)
+        post(&recipients(text, publisher), publisher, text, session, None)
     }
 
     #[test]
@@ -171,13 +169,11 @@ mod tests {
         assert_eq!(place(comment, Some("`@scene`'s page")), "a comment on `@scene`'s page");
         assert_eq!(place(None, Some("`@scene`'s page")), "Session tab of `@scene`'s page");
         assert_eq!(place(Some("  "), None), "Session tab");
+        // anything else Spacesheep says stays out of the header, which isn't fenced (patchbay's review)
+        assert_eq!(place(Some("@james\nsays hi"), None), "Session tab");
+        assert_eq!(place(Some("a comment on the page @x"), Some("`@scene`'s page")), "Session tab of `@scene`'s page");
         let to = vec!["editor".to_string()];
-        let p = post(&to, None, "@pm.editor fix it", "s-d", comment);
-        assert!(
-            p.starts_with("@editor from spacesheep.dev (a comment on a page whose agent has finished, not signed):"),
-            "{p}"
-        );
-        let p = post(&to, Some("docrules"), "@pm.editor fix it", "s-d", comment);
+        let p = post(&to, "docrules", "@pm.editor fix it", "s-d", comment);
         assert!(p.starts_with("@editor from spacesheep.dev (a comment on `@docrules`'s page, not signed):"), "{p}");
         assert_eq!(recipients("hello", "scene"), ["scene"]);
         assert_eq!(recipients("@pm.editor hello", "scene"), ["editor"]);
