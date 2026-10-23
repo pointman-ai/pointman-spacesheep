@@ -463,7 +463,15 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         agent.thread
     ));
     lock(status).last = Some((now(), who.clone()));
-    let post = words::post(&to, &agent.handle, text, &agent.session, said::asked_in(raw).as_deref(), answers);
+    let post = words::post(
+        &to,
+        &agent.handle,
+        text,
+        &agent.session,
+        said::asked_in(raw).as_deref(),
+        answers,
+        said::redelivered(raw),
+    );
     let _ = posts.send(Post { thread: agent.thread, to: who, text: post });
 }
 

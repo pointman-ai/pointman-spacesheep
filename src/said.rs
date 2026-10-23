@@ -80,6 +80,12 @@ pub fn message_id(raw: &str) -> Option<i64> {
     id.filter(|id| *id > 0)
 }
 
+/// Whether Spacesheep sent this message before (`redelivered: true`): a new listener gets back, for a day, the
+/// messages a listener took that no `talk reply` came after.
+pub fn redelivered(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw).is_ok_and(|v| v["redelivered"] == true)
+}
+
 /// A message's words: `text`, `message` or `body`, looked for inside an object one of those holds too.
 pub fn words(v: &Value) -> Option<String> {
     match v {
@@ -132,6 +138,8 @@ mod tests {
         assert_eq!(asked_in(raw).as_deref(), Some("a comment on the page"));
         assert_eq!(asked_in(r#"{"text": "hi"}"#), None);
         assert_eq!(message_id(raw), Some(2));
+        assert!(!redelivered(raw) && redelivered(r#"{"id": 2, "redelivered": true}"#));
+        assert!(!redelivered(r#"{"redelivered": "yes"}"#) && !redelivered("not json"));
         assert_eq!(message_id(r#"{"id": "19"}"#), Some(19));
         for none in [r#"{"id": "m1"}"#, r#"{"id": 0}"#, r#"{"id": -3}"#, r#"{"id": 1.5}"#, r#"{"text": "hi"}"#] {
             assert_eq!(message_id(none), None, "{none}");

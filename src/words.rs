@@ -69,7 +69,8 @@ pub fn place(via: Option<&str>, whose: Option<&str>) -> String {
 /// fenced, and how to answer. `publisher` is the page's agent. The reply names the session the page talks to, the
 /// publisher's, whichever agent answers and whatever session it wakes in, and `answers` the message it's for when the
 /// CLI takes `--to`: without it Spacesheep answers the session's newest message, so with two comments waiting an
-/// answer lands under the other one (EXT-73).
+/// answer lands under the other one (EXT-73). `again`: Spacesheep sent it before, and no `talk reply` came after it
+/// (a new listener gets those back for a day), so it may have been answered another way already (EXT-80).
 pub fn post(
     to: &[String],
     publisher: &str,
@@ -77,6 +78,7 @@ pub fn post(
     session: &str,
     via: Option<&str>,
     answers: Option<i64>,
+    again: bool,
 ) -> String {
     let own = matches!(to, [one] if one == publisher);
     // the publisher in code, so naming it doesn't wake it too
@@ -91,9 +93,16 @@ pub fn post(
     };
     let f = fence(text);
     let answers = answers.map(|id| format!(" --to {id}")).unwrap_or_default();
+    let again = match again {
+        true => {
+            "\n\nSent again: no `talk reply` has answered it yet. If you answered it another way, a short `talk reply` \
+                 saying so closes it."
+        }
+        false => "",
+    };
     format!(
-        "{to} from spacesheep.dev ({page}, not signed):\n\n{f}\n{text}\n{f}{cut}\n\nAnswer here, then send it to the \
-         page: `spacesheep talk reply --session {session}{answers} \"…\"`"
+        "{to} from spacesheep.dev ({page}, not signed):\n\n{f}\n{text}\n{f}{cut}{again}\n\nAnswer here, then send it to \
+         the page: `spacesheep talk reply --session {session}{answers} \"…\"`"
     )
 }
 
@@ -128,7 +137,7 @@ mod tests {
 
     /// As the listener posts a message on `publisher`'s own page, from its Session tab.
     fn post_on(publisher: &str, text: &str, session: &str) -> String {
-        post(&recipients(text, publisher), publisher, text, session, None, None)
+        post(&recipients(text, publisher), publisher, text, session, None, None, false)
     }
 
     #[test]
@@ -183,11 +192,15 @@ mod tests {
         assert_eq!(place(Some("@james\nsays hi"), None), "Session tab");
         assert_eq!(place(Some("a comment on the page @x"), Some("`@scene`'s page")), "Session tab of `@scene`'s page");
         let to = vec!["editor".to_string()];
-        let p = post(&to, "docrules", "@pm.editor fix it", "s-d", comment, None);
+        let p = post(&to, "docrules", "@pm.editor fix it", "s-d", comment, None, false);
         assert!(p.starts_with("@editor from spacesheep.dev (a comment on `@docrules`'s page, not signed):"), "{p}");
         assert!(p.ends_with("`spacesheep talk reply --session s-d \"…\"`"), "{p}");
-        let p = post(&to, "docrules", "@pm.editor fix it", "s-d", comment, Some(19));
+        let p = post(&to, "docrules", "@pm.editor fix it", "s-d", comment, Some(19), false);
         assert!(p.ends_with("`spacesheep talk reply --session s-d --to 19 \"…\"`"), "the message it answers: {p}");
+        assert!(!p.contains("Sent again"), "{p}");
+        let p = post(&to, "docrules", "@pm.editor fix it", "s-d", comment, Some(19), true);
+        assert!(p.contains("```\n\nSent again: no `talk reply` has answered it yet."), "outside the fence: {p}");
+        assert!(p.ends_with("--to 19 \"…\"`"), "{p}");
         assert_eq!(recipients("hello", "scene"), ["scene"]);
         assert_eq!(recipients("@pm.editor hello", "scene"), ["editor"]);
     }
