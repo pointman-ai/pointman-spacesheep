@@ -44,7 +44,8 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
 - **Who's listened for:** each agent here whose current session published a page. Every 5 minutes, while Talk is
   on, it reads the account's latest pages (`spacesheep list --json`) and, for each new or changed one, who pushed
   its versions (`versions <page> --json`: each version's `pushed_by.session_id`), kept in the state folder
-  (`pages.json`). Every 60 s it reads the node's agents (`agents.sessions`), and for each publisher with a thread
+  (`pages.json`). That list is the latest 50, so a page that leaves it is kept for 30 days from its last change,
+  up to 500 pages: a burst of other pages (core's docs job updates dozens at once) doesn't silence it. Every 60 s it reads the node's agents (`agents.sessions`), and for each publisher with a thread
   it runs `spacesheep talk listen --session <id>` (the machine's `spacesheep`, else `npx -y spacesheep@latest`),
   signed in with the machine's own key in `~/.config/spacesheep`. So one process per agent that has a page, not
   one per agent: a node may run dozens. A listener that ends (its link gone, the CLI failing) starts again after
@@ -66,7 +67,9 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
 
   The words are in a code fence longer than any run of backticks in them, so a mention inside wakes nobody (the
   board reads no mention in code). The reply names the session listened for, which is the page's, whatever
-  session the agent wakes in.
+  session the agent wakes in. Once the CLI's `talk reply` takes `--to` (its help, read every hour, says
+  `[--to MESSAGE_ID]`), it also names the message's `id`: otherwise Spacesheep answers the session's newest
+  message, and with comments waiting on two pages an answer lands under the other one.
 - **Pages whose agent has finished** (despawned, or moved on to a new session): the extension remembers each
   agent's session and thread (`agents.json` in the state folder, pruned to sessions still behind a recent page) and
   keeps listening on the 10 such pages changed most recently. Only sessions an agent here once had count: every node

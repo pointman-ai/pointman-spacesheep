@@ -46,6 +46,8 @@ case "$1 $2" in
     done;;
   "talk reply")
     echo '{"ok": true, "id": 1}';;
+  "--help "*)
+    if [ -f "$here/help" ]; then cat "$here/help"; else echo '    spacesheep talk reply <text> [--session ID]'; fi;;
   "talk status")
     if [ -f "$here/status" ]; then cat "$here/status"; else printf '{\n  "pro": true,\n  "enabled": true,\n  "this_machine": false\n}\n'; fi;;
   "list --json")
@@ -142,12 +144,30 @@ impl Fake {
         let mut spaces: Vec<Value> =
             std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         let id = format!("page-{session}");
-        spaces.push(json!({"id": id, "updated_at": "2026-10-21T09:00:00Z", "title": "a page"}));
+        let at = format!("{}.000Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
+        spaces.push(json!({"id": id, "updated_at": at, "title": "a page"}));
         let versions = json!({"space": {"uuid": id}, "versions": [{"number": 1, "pushed_by": {"label": "Claude Code", "session_id": session}}]});
         std::fs::write(self.file(&format!("versions.{id}.json")), versions.to_string()).unwrap();
         let tmp = self.file("spaces.json.tmp");
         std::fs::write(&tmp, Value::Array(spaces).to_string()).unwrap();
         std::fs::rename(tmp, file).unwrap();
+    }
+
+    /// Only these sessions' pages in `list`, as when newer pages have pushed the others out of the account's latest.
+    pub fn listed_only(&self, sessions: &[&str]) {
+        let file = self.file("spaces.json");
+        let spaces: Vec<Value> =
+            std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let keep = |s: &Value| sessions.iter().any(|x| s["id"] == format!("page-{x}"));
+        let tmp = self.file("spaces.json.tmp");
+        std::fs::write(&tmp, Value::Array(spaces.into_iter().filter(keep).collect()).to_string()).unwrap();
+        std::fs::rename(tmp, file).unwrap();
+    }
+
+    /// A CLI whose `talk reply` takes `--to`, the message it answers, as its help says.
+    pub fn answers_named(&self) {
+        std::fs::write(self.file("help"), "    spacesheep talk reply <text> [--session ID] [--to MESSAGE_ID]\n")
+            .unwrap();
     }
 
     /// Each call, its words.

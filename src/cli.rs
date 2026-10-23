@@ -143,6 +143,12 @@ pub fn run(cli: &Cli, args: &[&str], timeout: Duration) -> std::io::Result<Ran> 
     Ok(Ran { code, stdout, stderr: last_words(&stderr) })
 }
 
+/// Whether this CLI's `talk reply` takes `--to`, the message it answers (CLI pull 55: its help says
+/// `[--to MESSAGE_ID]`). Without it Spacesheep answers the session's newest message.
+pub fn answers_named(help: &Ran) -> bool {
+    help.stdout.contains("--to MESSAGE_ID") || help.stderr.contains("--to MESSAGE_ID")
+}
+
 /// What a CLI said on stderr worth repeating, clipped: its error (`✗ not signed in — …`), else its last line. npx's
 /// own notices (`npm notice …`, `npm warn …`) come after it, so they're never it.
 pub fn last_words(stderr: &str) -> String {

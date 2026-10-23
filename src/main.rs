@@ -42,6 +42,8 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often the pages are read for who published them, and how long each read may take.
 const PAGES_EVERY: Duration = Duration::from_secs(300);
 const PAGES_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often the CLI's help is read for whether `talk reply` takes `--to` (npx's spacesheep@latest moves on its own).
+const HELP_EVERY: Duration = Duration::from_secs(3600);
 /// A listener that ends is started again after this, doubling each time it ends again, to AGAIN_MAX; one that ran
 /// HEALTHY or delivered a message starts the wait afresh.
 const AGAIN_FIRST: Duration = Duration::from_secs(5);
@@ -238,6 +240,9 @@ struct Status {
     posted: Option<String>,
     /// A listener was stopped by Spacesheep (Talk off, its link gone): the next look reads the account's switch.
     recheck: bool,
+    /// The CLI's `talk reply` takes `--to`, the message it answers, as its help last said; and when it was read.
+    answers_named: bool,
+    helped_at: Option<f64>,
 }
 
 /// The listeners' process groups, by session, kept in the state folder for the next start.
@@ -424,6 +429,8 @@ fn page_of(agent: &Agent) -> String {
 /// the page's thread. A finished agent can't answer, so its page's message reaches only the other agents it calls;
 /// one that calls nobody else gets a reply on the page saying how to ask.
 fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &Sender<Post>, status: &Mutex<Status>) {
+    // the message the answer is for, when the CLI can say so (EXT-73)
+    let answers = if lock(status).answers_named { said::message_id(raw) } else { None };
     let mut to = words::recipients(text, &agent.handle);
     if agent.gone {
         to.retain(|t| *t != agent.handle);
@@ -435,7 +442,12 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
              @session @pm.<agent>, like @session @pm.search.",
             agent.handle
         );
-        let args = ["talk", "reply", "--session", agent.session.as_str(), answer.as_str()];
+        let to = answers.map(|id| id.to_string());
+        let mut args = vec!["talk", "reply", "--session", agent.session.as_str()];
+        if let Some(to) = &to {
+            args.extend(["--to", to.as_str()]);
+        }
+        args.push(answer.as_str());
         match cli::run(cli, &args, REPLY_TIMEOUT) {
             Ok(r) if r.code == Some(0) => {}
             Ok(r) => h.log(format!("the reply on {} didn't go: {}", page_of(agent), r.stderr)),
@@ -451,7 +463,7 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         agent.thread
     ));
     lock(status).last = Some((now(), who.clone()));
-    let post = words::post(&to, &agent.handle, text, &agent.session, said::asked_in(raw).as_deref());
+    let post = words::post(&to, &agent.handle, text, &agent.session, said::asked_in(raw).as_deref(), answers);
     let _ = posts.send(Post { thread: agent.thread, to: who, text: post });
 }
 
@@ -688,6 +700,19 @@ impl Talk {
             self.state.join("pages.json"),
         );
         std::thread::spawn(move || {
+            let due = lock(&status).helped_at.is_none_or(|at| now() - at >= scaled(HELP_EVERY).as_secs_f64());
+            if due {
+                let named = cli::run(&cli, &["--help"], PAGES_TIMEOUT).ok().map(|r| cli::answers_named(&r));
+                let mut st = lock(&status);
+                st.helped_at = Some(now());
+                if let Some(named) = named.filter(|n| *n != st.answers_named) {
+                    h.log(format!(
+                        "talk reply {} the message it answers (--to)",
+                        if named { "names" } else { "can't name" }
+                    ));
+                    st.answers_named = named;
+                }
+            }
             let got = publishers(&h, &cli, &file);
             let mut st = lock(&status);
             match got {
@@ -744,7 +769,7 @@ fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<Vec<Strin
         _ => return Err(format!("`spacesheep list` failed: {}", ran.stderr)),
     };
     let mut known = Known::from_json(&std::fs::read_to_string(file).unwrap_or_default());
-    known.0.retain(|id, _| list.iter().any(|s| &s.id == id));
+    known.keep(&list, now() as i64);
     let stale: Vec<&pages::Space> = list.iter().filter(|s| known.stale(s)).collect();
     for space in stale {
         let ran = cli::run(cli, &["versions", &space.id, "--json"], PAGES_TIMEOUT);

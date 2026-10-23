@@ -287,6 +287,59 @@ fn a_restart_keeps_the_finished_agents_it_remembers() {
 }
 
 #[test]
+fn the_reply_names_the_message_it_answers_once_the_cli_can() {
+    // EXT-73: Spacesheep answers a session's newest message, so with comments waiting on two pages a reply that names
+    // none lands under the other one. A CLI with `talk reply --to` says which.
+    for named in [false, true] {
+        let board = Board::with(vec![agent("scene", "s-1", 41)]);
+        let fake = Fake::new();
+        if named {
+            fake.answers_named();
+        }
+        fake.published("s-1");
+        let node = spacesheep(&fake, &board, on()).start().unwrap();
+        assert!(wait(WITHIN, || fake.calls().iter().any(|c| c == "--help")), "{}", node.log());
+        assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{}", node.log());
+        fake.push("s-1", &format!("{}\n", json!({"message": "make it blue", "id": 19})));
+        let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+        let text = got[0]["text"].as_str().unwrap();
+        let line = if named { "talk reply --session s-1 --to 19 \"…\"" } else { "talk reply --session s-1 \"…\"" };
+        assert!(text.ends_with(&format!("`spacesheep {line}`")), "named {named}: {text}");
+        if named {
+            // and the extension's own answer on a finished agent's page names its message too
+            board.set_agents(vec![]);
+            assert!(wait(WITHIN, || node.log().contains("listening on @scene's page (finished)")), "{}", node.log());
+            fake.push("s-1", &format!("{}\n", json!({"message": "hello", "id": 20})));
+            let reply = "talk reply --session s-1 --to 20 scene has finished";
+            assert!(wait(WITHIN, || fake.calls().iter().any(|c| c.starts_with(reply))), "{:?}", fake.calls());
+        }
+    }
+}
+
+#[test]
+fn a_page_pushed_out_of_the_latest_list_still_reaches_its_agent() {
+    // `list` is the account's latest 50: a burst of other pages (core's docs job, 48 in a minute) pushes one out
+    let board = Board::with(vec![agent("scene", "s-1", 41), agent("busy", "s-2", 42)]);
+    let fake = Fake::new();
+    fake.published("s-1");
+    fake.published("s-2");
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    assert!(wait(WITHIN, || fake.listens("s-1") == 1 && fake.listens("s-2") == 1), "{}", node.log());
+
+    fake.listed_only(&["s-2"]);
+    let lists = || fake.calls().iter().filter(|c| *c == "list --json").count();
+    let before = lists();
+    assert!(wait(WITHIN, || lists() >= before + 2), "two more reads of the pages: {}", node.log());
+    assert!(!node.log().contains("not listening for @scene"), "{}", node.log());
+
+    fake.push("s-1", &format!("{MESSAGE}\n"));
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    assert_eq!(got[0]["thread_id"], 41);
+    assert_eq!(fake.listens("s-1"), 1, "the same listener all along: {:?}", fake.calls());
+}
+
+#[test]
 fn pages_no_agent_here_ever_had_are_left_to_their_own_node() {
     // every node reads the account's pages: s-nixos is an agent alive on another node, s-james James's own session
     let (fake, board) = (Fake::new(), Board::with(vec![agent("editor", "s-e", 50)]));
