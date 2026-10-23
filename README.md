@@ -69,7 +69,9 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   board reads no mention in code). The reply names the session listened for, which is the page's, whatever
   session the agent wakes in. Once the CLI's `talk reply` takes `--to` (its help, read every hour, says
   `[--to MESSAGE_ID]`), it also names the message's `id`: otherwise Spacesheep answers the session's newest
-  message, and with comments waiting on two pages an answer lands under the other one.
+  message, and with comments waiting on two pages an answer lands under the other one. A message Spacesheep sends
+  again (`redelivered`: a new listener gets back, for a day, what no `talk reply` answered) says so under the
+  fence, since the agent may have answered it another way.
 - **Pages whose agent has finished** (despawned, or moved on to a new session): the extension remembers each
   agent's session and thread (`agents.json` in the state folder, pruned to sessions still behind a recent page) and
   keeps listening on the 10 such pages changed most recently. Only sessions an agent here once had count: every node

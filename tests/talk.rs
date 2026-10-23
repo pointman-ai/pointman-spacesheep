@@ -317,6 +317,24 @@ fn the_reply_names_the_message_it_answers_once_the_cli_can() {
 }
 
 #[test]
+fn a_message_sent_again_says_so() {
+    // EXT-80: a new listener gets back the messages no `talk reply` answered, which may have been answered another way
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.published("s-1");
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{}", node.log());
+    let first = json!({"message": "first time", "id": 7});
+    let again = json!({"message": "again", "id": 6, "redelivered": true});
+    fake.push("s-1", &format!("{first}\n{again}\n"));
+    let got = board.wait_posts(WITHIN, |p| p.len() >= 2);
+    let texts: Vec<&str> = got.iter().map(|p| p["text"].as_str().unwrap()).collect();
+    assert_eq!(texts.len(), 2, "{}", node.log());
+    assert!(!texts[0].contains("Sent again"), "{}", texts[0]);
+    assert!(texts[1].contains("Sent again: no `talk reply` has answered it yet."), "{}", texts[1]);
+}
+
+#[test]
 fn a_page_pushed_out_of_the_latest_list_still_reaches_its_agent() {
     // `list` is the account's latest 50: a burst of other pages (core's docs job, 48 in a minute) pushes one out
     let board = Board::with(vec![agent("scene", "s-1", 41), agent("busy", "s-2", 42)]);
