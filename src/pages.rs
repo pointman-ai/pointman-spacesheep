@@ -1,11 +1,17 @@
 //! Which sessions published a page: a page's Session tab talks to the session that deployed it, and every deploy
 //! records its session (`spacesheep versions <space> --json`: each version's `pushed_by.session_id`). The spaces come
 //! from `spacesheep list --json` (the account's latest, with `id` and `updated_at`), so a page's versions are read
-//! again only when it has changed.
+//! again only when it has changed. That list is only the latest 50, so a page that leaves it is kept a while: it
+//! hasn't changed since, so who published it still holds (EXT-75).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
+
+/// How long a page that has left the latest list is kept, from its last change, and how many pages are kept in all
+/// (Pointman EXT-75: one session updating 48 pages in 20 minutes pushed every other agent's pages out of the 50).
+pub const KEEP_DAYS: i64 = 30;
+pub const KEEP_MAX: usize = 500;
 
 /// A space as `list --json` gives it: its id, and when it last changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +65,23 @@ impl Known {
         Value::Object(m).to_string()
     }
 
+    /// What's kept after reading the latest list: every page in it, and each that has left it but changed in the last
+    /// KEEP_DAYS days (`now`: seconds since 1970); the KEEP_MAX most recently changed in all.
+    pub fn keep(&mut self, list: &[Space], now: i64) {
+        let since = iso(now - KEEP_DAYS * 86_400);
+        self.0.retain(|id, (at, _)| {
+            list.iter().any(|s| &s.id == id) || at.get(..since.len()).is_some_and(|at| at >= since.as_str())
+        });
+        if self.0.len() > KEEP_MAX {
+            let mut newest: Vec<(String, String)> =
+                self.0.iter().map(|(id, (at, _))| (at.clone(), id.clone())).collect();
+            newest.sort_by(|a, b| b.cmp(a));
+            for (_, id) in newest.into_iter().skip(KEEP_MAX) {
+                self.0.remove(&id);
+            }
+        }
+    }
+
     /// Whether this page needs its versions read: new, or changed since.
     pub fn stale(&self, s: &Space) -> bool {
         self.0.get(&s.id).is_none_or(|(at, _)| *at != s.updated_at || at.is_empty())
@@ -76,6 +99,21 @@ impl Known {
         }
         out
     }
+}
+
+/// Seconds since 1970 as a UTC time to the second, the way Spacesheep's `updated_at` starts: "2026-10-23T08:03:10".
+pub fn iso(secs: i64) -> String {
+    let (days, s) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // days to a civil date (Howard Hinnant's algorithm)
+    let z = days + 719_468;
+    let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60)
 }
 
 #[cfg(test)]
@@ -109,5 +147,30 @@ mod tests {
         assert_eq!(again.publishers(), ["s-1"]);
         known.0.insert("p2".into(), ("t9".into(), BTreeSet::from(["s-2".to_string(), "s-1".to_string()])));
         assert_eq!(known.publishers(), ["s-1", "s-2"], "the newest page's sessions first, each once");
+    }
+
+    #[test]
+    fn a_page_that_leaves_the_latest_list_is_kept_for_thirty_days() {
+        assert_eq!(iso(0), "1970-01-01T00:00:00");
+        assert_eq!(iso(1_700_000_000), "2023-11-14T22:13:20");
+        assert_eq!(iso(951_782_400), "2000-02-29T00:00:00");
+        let now = 1_792_743_790; // 2026-10-23T08:23:10
+        assert_eq!(iso(now), "2026-10-23T08:23:10");
+        let page = |at: &str, who: &str| (at.to_string(), BTreeSet::from([who.to_string()]));
+        let mut known = Known(BTreeMap::from([
+            ("listed".to_string(), page("2026-08-01T00:00:00Z", "s-1")),
+            ("left".to_string(), page("2026-10-21T09:00:00.120Z", "s-2")),
+            ("edge".to_string(), page("2026-09-23T08:23:10Z", "s-3")),
+            ("old".to_string(), page("2026-09-23T08:23:09.999Z", "s-4")),
+            ("undated".to_string(), page("", "s-5")),
+        ]));
+        known.keep(&[Space { id: "listed".into(), updated_at: "2026-08-01T00:00:00Z".into() }], now);
+        assert_eq!(known.0.keys().collect::<Vec<_>>(), ["edge", "left", "listed"], "a listed page stays however old");
+
+        let mut many =
+            Known((0..KEEP_MAX + 3).map(|i| (format!("p{i:04}"), page(&iso(now - i as i64), "s"))).collect());
+        many.keep(&[], now);
+        assert_eq!(many.0.len(), KEEP_MAX);
+        assert!(many.0.contains_key("p0000") && !many.0.contains_key(&format!("p{:04}", KEEP_MAX)), "the newest kept");
     }
 }

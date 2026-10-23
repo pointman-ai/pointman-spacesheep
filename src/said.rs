@@ -69,6 +69,17 @@ pub fn asked_in(raw: &str) -> Option<String> {
     v["asked_in"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
 }
 
+/// The message's id (`id`, a whole number above 0), which `talk reply --to` takes to answer that message.
+pub fn message_id(raw: &str) -> Option<i64> {
+    let v: Value = serde_json::from_str(raw).ok()?;
+    let id = match &v["id"] {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    };
+    id.filter(|id| *id > 0)
+}
+
 /// A message's words: `text`, `message` or `body`, looked for inside an object one of those holds too.
 pub fn words(v: &Value) -> Option<String> {
     match v {
@@ -120,6 +131,11 @@ mod tests {
         assert!(text.starts_with("hello\n\n---\nThe owner of the page"), "{text}");
         assert_eq!(asked_in(raw).as_deref(), Some("a comment on the page"));
         assert_eq!(asked_in(r#"{"text": "hi"}"#), None);
+        assert_eq!(message_id(raw), Some(2));
+        assert_eq!(message_id(r#"{"id": "19"}"#), Some(19));
+        for none in [r#"{"id": "m1"}"#, r#"{"id": 0}"#, r#"{"id": -3}"#, r#"{"id": 1.5}"#, r#"{"text": "hi"}"#] {
+            assert_eq!(message_id(none), None, "{none}");
+        }
     }
 
     #[test]
