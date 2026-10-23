@@ -93,12 +93,17 @@ pub fn post(
     };
     let f = fence(text);
     let answers = answers.map(|id| format!(" --to {id}")).unwrap_or_default();
-    let again = match again {
-        true => {
-            "\n\nSent again: no `talk reply` has answered it yet. If you answered it another way, a short `talk reply` \
-                 saying so closes it."
+    // closing it takes a reply to it: without --to, a reply answers the newest message waiting, which may be another
+    let again = match (again, answers.is_empty()) {
+        (false, _) => "",
+        (true, false) => {
+            "\n\nSent again: no `talk reply` has answered it yet. If you answered it another way, a short answer saying so, \
+             sent with the line below, closes it."
         }
-        false => "",
+        (true, true) => {
+            "\n\nSent again: no `talk reply` has answered it yet. If you answered it another way, and it's the only \
+             message waiting, a short answer saying so, sent with the line below, closes it."
+        }
     };
     format!(
         "{to} from spacesheep.dev ({page}, not signed):\n\n{f}\n{text}\n{f}{cut}{again}\n\nAnswer here, then send it to \
@@ -200,7 +205,10 @@ mod tests {
         assert!(!p.contains("Sent again"), "{p}");
         let p = post(&to, "docrules", "@pm.editor fix it", "s-d", comment, Some(19), true);
         assert!(p.contains("```\n\nSent again: no `talk reply` has answered it yet."), "outside the fence: {p}");
+        assert!(!p.contains("only message waiting"), "the line names the message: {p}");
         assert!(p.ends_with("--to 19 \"…\"`"), "{p}");
+        let p = post(&to, "docrules", "@pm.editor fix it", "s-d", comment, None, true);
+        assert!(p.contains("and it's the only message waiting,"), "no --to: a reply answers the newest: {p}");
         assert_eq!(recipients("hello", "scene"), ["scene"]);
         assert_eq!(recipients("@pm.editor hello", "scene"), ["editor"]);
     }

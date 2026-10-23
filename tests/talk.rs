@@ -332,6 +332,8 @@ fn a_message_sent_again_says_so() {
     assert_eq!(texts.len(), 2, "{}", node.log());
     assert!(!texts[0].contains("Sent again"), "{}", texts[0]);
     assert!(texts[1].contains("Sent again: no `talk reply` has answered it yet."), "{}", texts[1]);
+    // this CLI's reply can't name the message, so it would answer the newest one waiting
+    assert!(texts[1].contains("and it's the only message waiting,"), "{}", texts[1]);
 }
 
 #[test]
