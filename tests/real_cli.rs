@@ -23,23 +23,23 @@ fn the_real_cli_on_a_machine_not_signed_in_says_so_in_health() {
     // npx fetches the CLI into the empty HOME first
     let signed_out = wait(Duration::from_secs(180), || {
         let health = node.call("health.check", json!({})).unwrap();
-        part(&health, "account")["needs"] == json!(["auth"])
+        part(&health, "account")["needs"] == json!(["ACTION_AUTH"])
     });
     let health = node.call("health.check", json!({})).unwrap();
     assert!(signed_out, "{health}\n{}", node.log());
     let account = part(&health, "account");
-    assert_eq!(account["state"], "failing", "{health}");
+    assert_eq!(account["state"], "STATE_FAILING", "{health}");
     assert!(
         account["why"].as_str().unwrap().starts_with("this machine isn't signed in to Spacesheep: not signed in"),
         "{health}"
     );
     // nothing is listened for on a machine that can't sign in
     let listeners = part(&health, "listeners");
-    assert_eq!(listeners["state"], "stopped", "{health}");
+    assert_eq!(listeners["state"], "STATE_STOPPED", "{health}");
     assert_eq!(listeners["why"], "not listening: this machine isn't signed in to Spacesheep", "{health}");
     assert!(node.log().contains("talk status: not signed in"), "{}", node.log());
     assert!(!node.log().contains("listening for @scene"), "{}", node.log());
-    let fix = node.call("health.fix", json!({"part": "account", "action": "auth"})).unwrap();
+    let fix = node.call("health.fix", json!({"part": "account", "action": "ACTION_AUTH"})).unwrap();
     assert!(fix["message"].as_str().unwrap().contains("npx -y spacesheep@latest login"), "{fix}");
     assert!(board.posts().is_empty());
 }

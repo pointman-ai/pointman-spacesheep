@@ -19,8 +19,8 @@ Spacesheep publishes pages and sites at a URL people open on any device.
 - A page for one or more Pointman tasks says so:
   - Its title starts with their refs: `AGC-16 · One ClientSpec per client`. For several tasks in one project, use the project's key: `AGC · Every agent client on a node`.
   - Near the top, it links each task as `<a href="pointman://item/AGC-16">AGC-16</a>`, which opens the task in the Pointman app.
-  - Each task links the page: `update_item(ref, changes={"links_add": ["<the page's https:// link>"]})`, which keeps the task's other links. Never send `links`: it replaces them all.
-  - Post the page's link with `task_id` as well, so the post shows on the task.
+  - Each task links the page: `update_task(task=<ref>, links_add=["<the page's https:// link>"])`, which keeps the task's other links.
+  - Post the page's link with `task` as well, so the post shows on the task.
 
 **The CLI:** `npx -y spacesheep@latest <command>` (or `spacesheep <command>` where it's installed; `--help` lists them all).
 - A new page, private: `deploy page.html --title "…" --emoji 📄 --description "one line" --json` (one `.html` file, or a folder with an `index.html`). The answer has its `url` and `uuid`.
