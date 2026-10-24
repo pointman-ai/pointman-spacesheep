@@ -1,6 +1,6 @@
 [package]
 name = "spacesheep"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 description = "Spacesheep for Pointman: pages published with its CLI, and Talk from a page's Session tab through the node."
 license = "MIT"
