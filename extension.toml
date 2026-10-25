@@ -13,10 +13,10 @@
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.5.2"
+version = "0.6.0"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
-node = ">=0.1,<1"
+node = ">=0.2.0"
 platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64", "linux-arm64"]
 
 [run]

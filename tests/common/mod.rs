@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use pointman_extension::protocol::{BoardPostRequest, BoardPostResponse};
 use pointman_extension::testing::StandIn;
+use pointman_extension::v1::PostId;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -192,9 +194,9 @@ pub fn alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-/// An agent as `agents.sessions` gives it.
+/// An agent as `agents.sessions` gives it (an AgentSessionOnMachine, in standard JSON).
 pub fn agent(handle: &str, session: &str, thread: i64) -> Value {
-    json!({"handle": handle, "client": "claude", "session_id": session, "thread_id": thread})
+    json!({"handle": {"handle": handle}, "client": "claude", "sessionId": session, "thread": {"value": format!("thr_{thread}")}})
 }
 
 /// The node's side: the agents it says, and each post made.
@@ -246,10 +248,13 @@ pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn 
         .env("PATH", path_var)
         .env("POINTMAN_SPACESHEEP_FASTER", FASTER)
         .method("agents.sessions", move |_| Ok(json!({"agents": *agents.lock().unwrap()})))
-        .method("board.post", move |params: Value| {
+        .on(move |post: BoardPostRequest| {
             let mut posts = posts.lock().unwrap();
-            posts.push(params);
-            Ok(json!({"message_id": 1000 + posts.len()}))
+            // each post as the tests read it: its thread's number and its text
+            let thread = post.thread.as_option().and_then(|t| t.value.strip_prefix("thr_")?.parse::<i64>().ok());
+            posts.push(json!({"thread_id": thread, "text": post.text}));
+            let id = PostId { value: format!("post_{}", 1000 + posts.len()), ..Default::default() };
+            Ok(BoardPostResponse { post: id.into(), ..Default::default() })
         })
 }
 
@@ -270,9 +275,9 @@ pub fn wait(within: Duration, mut test: impl FnMut() -> bool) -> bool {
     test()
 }
 
-/// One of health's parts, by id.
+/// One of health.check's parts, by id.
 pub fn part<'a>(health: &'a Value, id: &str) -> &'a Value {
-    health.as_array().unwrap().iter().find(|p| p["id"] == id).unwrap_or_else(|| panic!("no {id} in {health}"))
+    health["parts"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap_or_else(|| panic!("no {id} in {health}"))
 }
 
 /// The handles a post @mentions, as the board reads them (board.py's MENTION, with CODE's spans taken out).

@@ -43,9 +43,9 @@ fn a_message_becomes_one_post_in_the_agents_thread_fenced() {
     assert_eq!(fake.listens("s-1"), 1, "still the same listener");
 
     let health = node.call("health.check", json!({})).unwrap();
-    assert_eq!(part(&health, "account")["state"], "ok", "{health}");
+    assert_eq!(part(&health, "account")["state"], "STATE_OK", "{health}");
     let listeners = part(&health, "listeners");
-    assert_eq!(listeners["state"], "ok", "{health}");
+    assert_eq!(listeners["state"], "STATE_OK", "{health}");
     let why = listeners["why"].as_str().unwrap();
     assert!(
         why.starts_with("listening for @scene (whose sessions published pages); the last message was at "),
@@ -134,7 +134,7 @@ fn a_listener_that_ends_is_started_again() {
     assert!(log.contains("the listener for @scene ended (listen link expired or revoked)"), "{log}");
     assert!(log.contains("the listener for @scene ended (talk listen exited 1: fetch failed)"), "{log}");
     let health = node.call("health.check", json!({})).unwrap();
-    assert_eq!(part(&health, "listeners")["state"], "ok", "listening again: {health}");
+    assert_eq!(part(&health, "listeners")["state"], "STATE_OK", "listening again: {health}");
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn a_listener_that_keeps_ending_waits_longer_each_time() {
     assert!((4..=8).contains(&runs), "{runs} runs: {}", node.log());
     let health = node.call("health.check", json!({})).unwrap();
     let listeners = part(&health, "listeners");
-    assert_eq!(listeners["state"], "failing", "{health}");
+    assert_eq!(listeners["state"], "STATE_FAILING", "{health}");
     assert_eq!(listeners["why"], "@scene: talk is off for this account", "{health}");
     assert!(board.posts().is_empty());
 }
@@ -180,11 +180,11 @@ fn talk_off_for_the_account_means_no_listeners() {
     assert!(board.posts().is_empty());
     let health = node.call("health.check", json!({})).unwrap();
     let account = part(&health, "account");
-    assert_eq!(account["state"], "stopped", "{health}");
+    assert_eq!(account["state"], "STATE_STOPPED", "{health}");
     let why = account["why"].as_str().unwrap();
     assert!(why.starts_with("Talk is off for the Spacesheep account, so a page's Session tab can't send"), "{why}");
     let listeners = part(&health, "listeners");
-    assert_eq!(listeners["state"], "stopped", "{health}");
+    assert_eq!(listeners["state"], "STATE_STOPPED", "{health}");
     assert!(listeners["why"].as_str().unwrap().starts_with("not listening: Talk is off"), "{health}");
     assert_eq!(node.events()["spacesheep.talk"]["on"], false);
 

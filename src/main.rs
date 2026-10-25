@@ -19,6 +19,12 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
+use pointman_extension::protocol::{
+    AgentsSessionsRequest, AgentsSessionsResponse, BoardPostRequest, HealthCheckRequest, HealthCheckResponse,
+    HealthFixRequest, HealthFixResponse,
+};
+use pointman_extension::v1::health::{part::State, Action, Part};
+use pointman_extension::v1::{member_ref, ThreadId};
 use pointman_extension::{Extension, Handle};
 use serde_json::{json, Value};
 use spacesheep::cli::{self, Cli};
@@ -101,6 +107,24 @@ fn remembered_json(r: &Remembered) -> String {
     let m: serde_json::Map<String, Value> =
         r.iter().map(|(s, (h, t))| (s.clone(), json!({"handle": h, "thread": t}))).collect();
     Value::Object(m).to_string()
+}
+
+/// `agents.sessions`' answer as the JSON [`remember`] and [`wanted`] read: each agent's `handle`, `session_id` and
+/// `thread_id` (the thread's number, 0 for none).
+fn sessions(answer: &AgentsSessionsResponse) -> Value {
+    let agents: Vec<Value> = answer
+        .agents
+        .iter()
+        .map(|a| {
+            let handle = match a.handle.as_option().and_then(|h| h.kind.as_ref()) {
+                Some(member_ref::Kind::Handle(h)) => h.clone(),
+                _ => String::new(),
+            };
+            let thread = a.thread.as_option().and_then(|t| t.value.strip_prefix("thr_")?.parse::<i64>().ok());
+            json!({"handle": handle, "client": a.client, "session_id": a.session_id, "thread_id": thread.unwrap_or(0)})
+        })
+        .collect();
+    json!({"agents": agents})
 }
 
 /// Each agent here with a session and a thread, as `agents.sessions` gives them, into what's remembered; and a
@@ -485,11 +509,16 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                 if attempt > 0 {
                     std::thread::sleep(scaled(POST_AGAIN));
                 }
-                match h.request("board.post", json!({"thread_id": post.thread, "text": post.text})) {
+                let ask = BoardPostRequest {
+                    thread: ThreadId { value: format!("thr_{}", post.thread), ..Default::default() }.into(),
+                    text: post.text.clone(),
+                    ..Default::default()
+                };
+                match h.request(&ask) {
                     Ok(answer) => {
                         h.log(format!(
                             "posted the message for {} in thread {}: message {}",
-                            post.to, post.thread, answer["message_id"]
+                            post.to, post.thread, answer.post.value
                         ));
                         last = None;
                         break;
@@ -533,7 +562,7 @@ impl Talk {
         if let Some(g) = &self.groups {
             return g.clone();
         }
-        let dir = self.h.node()["state_dir"].as_str().map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let dir = Some(self.h.state_dir()).filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(std::env::temp_dir);
         self.state = dir.clone();
         self.remembered = remembered_from(&std::fs::read_to_string(dir.join("agents.json")).unwrap_or_default());
         let g = Arc::new(Groups { path: dir.join("listeners.json"), pids: Mutex::default() });
@@ -591,8 +620,8 @@ impl Talk {
                 return;
             }
         }
-        let answer = match self.h.request("agents.sessions", json!({})) {
-            Ok(answer) => answer,
+        let answer = match self.h.request(&AgentsSessionsRequest::default()) {
+            Ok(answer) => sessions(&answer),
             Err(e) => {
                 // the listeners running keep going, and the next look tries again
                 self.h.log(format!("agents.sessions: {e:#}"));
@@ -810,8 +839,22 @@ fn account_words(a: &Account) -> String {
 }
 
 /// The parts health shows: the account's switch, which is Talk's one switch, and the listeners.
-fn health(st: &Status) -> Value {
-    let part = |id: &str, kind: &str, name: &str, state: &str, needs: Vec<&str>, why: String| json!({"id": id, "kind": kind, "name": name, "state": state, "needs": needs, "why": why});
+fn health(st: &Status) -> Vec<Part> {
+    let part = |id: &str, kind: &str, name: &str, state: &str, needs: Vec<&str>, why: String| Part {
+        id: id.to_string(),
+        kind: kind.to_string(),
+        name: Some(name.to_string()),
+        state: match state {
+            "ok" => State::STATE_OK,
+            "failing" => State::STATE_FAILING,
+            "stopped" => State::STATE_STOPPED,
+            _ => State::STATE_UNSPECIFIED,
+        }
+        .into(),
+        needs: needs.iter().filter(|n| **n == "auth").map(|_| Action::ACTION_AUTH.into()).collect(),
+        why: Some(why),
+        ..Default::default()
+    };
     let on = st.account == Account::On;
     let when = st.account_at.map(|at| format!(" (checked at {})", clock(at))).unwrap_or_default();
     let (state, needs, why) = match &st.account {
@@ -889,7 +932,7 @@ fn health(st: &Status) -> Value {
         )
     };
     let listeners = part("listeners", "listener", "Talk listeners", state, vec![], why);
-    json!([account, listeners])
+    vec![account, listeners]
 }
 
 fn main() -> anyhow::Result<()> {
@@ -918,30 +961,24 @@ fn main() -> anyhow::Result<()> {
     ext.every(TICK, move |_: &Handle| lock(&t).tick(), "talk");
 
     let st = status.clone();
-    ext.method("health.check", move |_| Ok(health(&lock(&st))));
+    ext.on(move |_: HealthCheckRequest| Ok(HealthCheckResponse { parts: health(&lock(&st)), ..Default::default() }));
     let st = status.clone();
-    ext.method("health.fix", move |params: Value| {
-        let message = match (params["part"].as_str(), params["action"].as_str()) {
-            (Some("account"), Some("auth")) => "Sign this machine in to Spacesheep yourself, in a terminal on it: \
+    ext.on(move |fix: HealthFixRequest| {
+        let message = match (fix.part.as_str(), fix.action.as_known()) {
+            ("account", Some(Action::ACTION_AUTH)) => {
+                "Sign this machine in to Spacesheep yourself, in a terminal on it: \
                                                 `npx -y spacesheep@latest login`, or `npx -y spacesheep@latest connect \
                                                 <key>` where there's no browser, with a key from \
                                                 https://spacesheep.dev/settings/api-keys (never posted)."
-                .to_string(),
+                    .to_string()
+            }
             _ => {
                 let parts = health(&lock(&st));
-                let why = parts
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|p| p["id"] == params["part"])
-                    .map(|p| p["why"].clone());
-                format!(
-                    "Nothing to fix from here{}",
-                    why.and_then(|w| w.as_str().map(|w| format!(": {w}"))).unwrap_or_default()
-                )
+                let why = parts.into_iter().find(|p| p.id == fix.part).and_then(|p| p.why);
+                format!("Nothing to fix from here{}", why.map(|w| format!(": {w}")).unwrap_or_default())
             }
         };
-        Ok(json!({"message": message}))
+        Ok(HealthFixResponse { message, ..Default::default() })
     });
 
     let done = ext.run();
