@@ -13,11 +13,13 @@
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.7.0"
+version = "0.7.1"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
 node = ">=0.3,<1"
 platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64", "linux-arm64"]
+# its robot account's face (@spacesheep, Pointman's EXT-85): the Spacesheep sheep
+avatar = "avatar.png"
 
 [run]
 command = ["bin/spacesheep"]
