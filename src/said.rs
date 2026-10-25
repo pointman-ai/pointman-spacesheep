@@ -69,6 +69,18 @@ pub fn asked_in(raw: &str) -> Option<String> {
     v["asked_in"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
 }
 
+/// The page a message was written on, at the comment when it's one (EXT-83): the link Spacesheep's footer gives
+/// (`space_url` with its `?comment=`), else `space_url`. The board draws it as a chip under the post that opens it.
+pub fn link(raw: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(raw).ok()?;
+    let page = v["space_url"].as_str().map(str::trim).filter(|u| u.starts_with("https://") && !u.contains(' '))?;
+    let message = words(&v).unwrap_or_default();
+    let at = message.find(&format!("{page}?comment="));
+    let comment =
+        at.map(|i| &message[i..]).map(|s| s.split(|c: char| c == ')' || c.is_whitespace()).next().unwrap_or(s));
+    Some(comment.unwrap_or(page).to_string()).filter(|u| u.len() <= 2048)
+}
+
 /// The message's id (`id`, a whole number above 0), which `talk reply --to` takes to answer that message.
 pub fn message_id(raw: &str) -> Option<i64> {
     let v: Value = serde_json::from_str(raw).ok()?;
@@ -136,6 +148,14 @@ mod tests {
         let [Said::Message { text, raw }] = &got[..] else { panic!("{got:?}") };
         assert!(text.starts_with("hello\n\n---\nThe owner of the page"), "{text}");
         assert_eq!(asked_in(raw).as_deref(), Some("a comment on the page"));
+        // the comment's own link, which the board draws as a chip that opens the page there (EXT-83)
+        let comment = "https://spacesheep.dev/space/4012a3ee-1a54-4246-a3e5-bcf54ed45df5?comment=14ceef29-5909-479a-94bd-105456dcee63";
+        assert_eq!(link(raw).as_deref(), Some(comment));
+        // from the Session tab, no comment: the page itself; no https page, no link
+        let session = r#"{"id": 3, "space_url": "https://spacesheep.dev/space/4012a3ee", "message": "hi @scene"}"#;
+        assert_eq!(link(session).as_deref(), Some("https://spacesheep.dev/space/4012a3ee"));
+        assert_eq!(link(r#"{"id": 4, "space_url": "http://example.com", "message": "x"}"#), None);
+        assert_eq!(link(r#"{"id": 5, "message": "x"}"#), None);
         assert_eq!(asked_in(r#"{"text": "hi"}"#), None);
         assert_eq!(message_id(raw), Some(2));
         assert!(!redelivered(raw) && redelivered(r#"{"id": 2, "redelivered": true}"#));

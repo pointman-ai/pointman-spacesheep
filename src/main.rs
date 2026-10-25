@@ -303,6 +303,8 @@ struct Post {
     thread: i64,
     to: String,
     text: String,
+    /// the page it was written on, at the comment (EXT-83): a chip under the post that opens it
+    link: Option<String>,
 }
 
 /// What a listener's thread shares with the look that started it.
@@ -496,7 +498,7 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         answers,
         said::redelivered(raw),
     );
-    let _ = posts.send(Post { thread: agent.thread, to: who, text: post });
+    let _ = posts.send(Post { thread: agent.thread, to: who, text: post, link: said::link(raw) });
 }
 
 /// Posts go out one at a time, in order, each tried POST_TRIES times.
@@ -512,6 +514,7 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                 let ask = BoardPostRequest {
                     thread: ThreadId { value: format!("thr_{}", post.thread), ..Default::default() }.into(),
                     text: post.text.clone(),
+                    links: post.link.iter().cloned().collect(),
                     ..Default::default()
                 };
                 match h.request(&ask) {
