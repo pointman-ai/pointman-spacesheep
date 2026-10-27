@@ -24,7 +24,7 @@ use pointman_extension::protocol::{
     HealthFixRequest, HealthFixResponse,
 };
 use pointman_extension::v1::health::{part::State, Action, Part};
-use pointman_extension::v1::{member_ref, ThreadId};
+use pointman_extension::v1::ThreadRef;
 use pointman_extension::{Extension, Handle};
 use serde_json::{json, Value};
 use spacesheep::cli::{self, Cli};
@@ -116,11 +116,8 @@ fn sessions(answer: &AgentsSessionsResponse) -> Value {
         .agents
         .iter()
         .map(|a| {
-            let handle = match a.handle.as_option().and_then(|h| h.kind.as_ref()) {
-                Some(member_ref::Kind::Handle(h)) => h.clone(),
-                _ => String::new(),
-            };
-            let thread = a.thread.as_option().and_then(|t| t.value.strip_prefix("thr_")?.parse::<i64>().ok());
+            let handle = a.agent.as_option().map(|h| h.name.clone()).unwrap_or_default();
+            let thread = a.thread.as_option().and_then(|t| t.id.strip_prefix("thr_")?.parse::<i64>().ok());
             json!({"handle": handle, "client": a.client, "session_id": a.session_id, "thread_id": thread.unwrap_or(0)})
         })
         .collect();
@@ -512,7 +509,7 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                     std::thread::sleep(scaled(POST_AGAIN));
                 }
                 let ask = BoardPostRequest {
-                    thread: ThreadId { value: format!("thr_{}", post.thread), ..Default::default() }.into(),
+                    thread: ThreadRef { id: format!("thr_{}", post.thread), ..Default::default() }.into(),
                     text: post.text.clone(),
                     links: post.link.iter().cloned().collect(),
                     ..Default::default()
@@ -521,7 +518,7 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                     Ok(answer) => {
                         h.log(format!(
                             "posted the message for {} in thread {}: message {}",
-                            post.to, post.thread, answer.post.value
+                            post.to, post.thread, answer.post.id
                         ));
                         last = None;
                         break;
