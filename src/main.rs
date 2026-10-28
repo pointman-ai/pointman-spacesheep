@@ -302,6 +302,7 @@ struct Post {
     text: String,
     /// the page it was written on, at the comment (EXT-83): a chip under the post that opens it
     link: Option<String>,
+    context: String,
 }
 
 /// What a listener's thread shares with the look that started it.
@@ -452,6 +453,7 @@ fn page_of(agent: &Agent) -> String {
 /// the page's thread. A finished agent can't answer, so its page's message reaches only the other agents it calls;
 /// one that calls nobody else gets a reply on the page saying how to ask.
 fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &Sender<Post>, status: &Mutex<Status>) {
+    let (text, pin) = said::comment_parts(text, raw);
     // the message the answer is for, when the CLI can say so (EXT-73)
     let answers = if lock(status).answers_named { said::message_id(raw) } else { None };
     let mut to = words::recipients(text, &agent.handle);
@@ -486,16 +488,17 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         agent.thread
     ));
     lock(status).last = Some((now(), who.clone()));
-    let post = words::post(
+    let post = words::post(&to, text);
+    let context = words::context(
         &to,
         &agent.handle,
-        text,
-        &agent.session,
         said::asked_in(raw).as_deref(),
+        &agent.session,
         answers,
         said::redelivered(raw),
+        pin,
     );
-    let _ = posts.send(Post { thread: agent.thread, to: who, text: post, link: said::link(raw) });
+    let _ = posts.send(Post { thread: agent.thread, to: who, text: post, link: said::link(raw), context });
 }
 
 /// Posts go out one at a time, in order, each tried POST_TRIES times.
@@ -511,6 +514,8 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                 let ask = BoardPostRequest {
                     thread: ThreadRef { id: format!("thr_{}", post.thread), ..Default::default() }.into(),
                     text: post.text.clone(),
+                    blocks: vec![serde_json::from_value(json!({"text": {"markdown": post.context}}))
+                        .expect("text block encodes")],
                     links: post.link.iter().cloned().collect(),
                     ..Default::default()
                 };
