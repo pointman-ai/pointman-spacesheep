@@ -315,8 +315,8 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "pointman-extension"
-version = "0.3.0"
-source = "git+https://github.com/pointman-ai/pointman-extension?rev=4f80815384ffc273dffe2fe151fb55dccb16d3df#4f80815384ffc273dffe2fe151fb55dccb16d3df"
+version = "0.5.0"
+source = "git+https://github.com/pointman-ai/pointman-extension?tag=v0.5.0#91829c5b75f0336ad6f40ad43427204649a58787"
 dependencies = [
  "anyhow",
  "buffa",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "spacesheep"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "fancy-regex",
