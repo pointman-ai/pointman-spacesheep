@@ -69,6 +69,22 @@ pub fn asked_in(raw: &str) -> Option<String> {
     v["asked_in"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
 }
 
+/// Older Spacesheep servers append context and reply instructions to the comment's words. Split only the
+/// recognized comment footer, from the end, so a horizontal rule in the person's own message is preserved.
+pub fn comment_parts<'a>(text: &'a str, raw: &str) -> (&'a str, Option<&'a str>) {
+    if asked_in(raw).as_deref() != Some("a comment on the page") {
+        return (text, None);
+    }
+    let Some((words, footer)) = text.rsplit_once("\n\n---\nThe owner of the page ") else {
+        return (text, None);
+    };
+    let first = footer.lines().next().unwrap_or_default();
+    let Some((_, pin)) = first.split_once(" wrote this as a comment on it, to you. ") else {
+        return (text, None);
+    };
+    (words, (!pin.is_empty()).then_some(pin))
+}
+
 /// The page a message was written on, at the comment when it's one (EXT-83): the link Spacesheep's footer gives
 /// (`space_url` with its `?comment=`), else `space_url`. The board draws it as a chip under the post that opens it.
 pub fn link(raw: &str) -> Option<String> {
