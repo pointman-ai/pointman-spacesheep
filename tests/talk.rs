@@ -11,6 +11,81 @@ use serde_json::json;
 
 const MESSAGE: &str = r#"{"text": "Can you make the header blue?", "id": "m1"}"#;
 
+fn comment(id: i64, key: &str, words: &str) -> String {
+    let page = "https://spacesheep.dev/space/page";
+    format!(
+        "{}\n",
+        json!({"id": id, "space_url": page, "asked_in": "a comment on the page",
+        "message": format!("{words}\n\n---\nThe owner of the page “Title” ({page}?comment={key}) wrote this as a comment on it, to you. It is about the page as a whole.")})
+    )
+}
+
+#[test]
+fn followups_share_the_first_posts_side_thread_and_session_tab_messages_stay_separate() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    let batch = format!(
+        "{}{}{}{}{}",
+        comment(1, "a", "first"),
+        comment(2, "a", "followup"),
+        comment(3, "b", "another comment"),
+        "{\"message\":\"session one\"}\n",
+        "{\"message\":\"session two\"}\n"
+    );
+    fake.prints("s-1", &batch);
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    let got = board.wait_posts(WITHIN, |p| p.len() >= 5);
+    assert_eq!(got.len(), 5, "{}", node.log());
+    assert!(got[0]["side_of"].is_null(), "{got:?}");
+    assert_eq!(got[1]["side_of"]["value"], "post_1001");
+    assert!(got[2..].iter().all(|post| post["side_of"].is_null()), "{got:?}");
+}
+
+#[test]
+fn a_restart_reuses_the_comment_root_but_a_new_pointman_thread_gets_its_own() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    let state = tempfile::tempdir().unwrap();
+    fake.published("s-1");
+    let node = spacesheep(&fake, &board, on()).state_dir(state.path()).start().unwrap();
+    assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{}", node.log());
+    fake.push("s-1", &comment(1, "a", "first"));
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    let path = state.path().join("extensions/spacesheep/comment-threads.json");
+    assert!(wait(WITHIN, || path.exists()), "root saved before restart");
+    node.stop();
+
+    let node = spacesheep(&fake, &board, on()).state_dir(state.path()).start().unwrap();
+    assert!(wait(WITHIN, || fake.listens("s-1") == 2), "{}", node.log());
+    fake.push("s-1", &comment(2, "a", "after restart"));
+    let got = board.wait_posts(WITHIN, |p| p.len() >= 2);
+    assert_eq!(got.len(), 2, "{}", node.log());
+    assert_eq!(got[1]["side_of"]["value"], "post_1001");
+    board.set_agents(vec![agent("scene", "s-1", 42)]);
+    std::thread::sleep(Duration::from_millis(2500)); // the next agents.sessions look updates the listener
+    fake.push("s-1", &comment(3, "a", "in a different Pointman thread"));
+    let got = board.wait_posts(WITHIN, |p| p.len() >= 3);
+    assert_eq!(got.len(), 3, "{}", node.log());
+    assert_eq!(got[2]["thread_id"], 42);
+    assert!(got[2]["side_of"].is_null());
+}
+
+#[test]
+fn a_failed_delivery_does_not_establish_a_comment_root() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    *board.failures.lock().unwrap() = 3;
+    fake.prints(
+        "s-1",
+        &format!("{}{}{}", comment(1, "a", "fails"), comment(2, "a", "first delivered"), comment(3, "a", "followup")),
+    );
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    let got = board.wait_posts(WITHIN, |p| p.len() >= 2);
+    assert_eq!(got.len(), 2, "{}", node.log());
+    assert!(got[0]["side_of"].is_null());
+    assert_eq!(got[1]["side_of"]["value"], "post_1001");
+}
+
 #[test]
 fn a_comment_keeps_its_words_and_moves_pin_and_reply_into_context() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));

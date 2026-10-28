@@ -24,12 +24,13 @@ use pointman_extension::protocol::{
     HealthFixRequest, HealthFixResponse,
 };
 use pointman_extension::v1::health::{part::State, Action, Part};
-use pointman_extension::v1::ThreadRef;
+use pointman_extension::v1::{PostRef, ThreadRef};
 use pointman_extension::{Extension, Handle};
 use serde_json::{json, Value};
 use spacesheep::cli::{self, Cli};
 use spacesheep::pages::{self, Known};
 use spacesheep::said::{self, Reader, Said};
+use spacesheep::threads::Threads;
 use spacesheep::words::{self, clock, now};
 
 /// How often a look is checked for.
@@ -303,6 +304,7 @@ struct Post {
     /// the page it was written on, at the comment (EXT-83): a chip under the post that opens it
     link: Option<String>,
     context: String,
+    comment: Option<String>,
 }
 
 /// What a listener's thread shares with the look that started it.
@@ -498,14 +500,34 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         said::redelivered(raw),
         pin,
     );
-    let _ = posts.send(Post { thread: agent.thread, to: who, text: post, link: said::link(raw), context });
+    let link = said::link(raw);
+    let comment = if pin.is_some() {
+        link.clone().filter(|url| url.split_once("?comment=").is_some_and(|(_, id)| !id.is_empty()))
+    } else {
+        None
+    };
+    let _ = posts.send(Post { thread: agent.thread, to: who, text: post, link, context, comment });
 }
 
 /// Posts go out one at a time, in order, each tried POST_TRIES times.
 fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
     let (tx, rx) = mpsc::channel::<Post>();
     std::thread::spawn(move || {
+        // initialize supplies state_dir after the process starts, so read it lazily on the first post.
+        let mut threads = None;
         for post in rx {
+            let path = h.state_dir().join("comment-threads.json");
+            let threads = threads.get_or_insert_with(|| {
+                Threads::read(&path, now() as u64).unwrap_or_else(|e| {
+                    h.log(format!("couldn't read comment threads: {e}"));
+                    Threads::default()
+                })
+            });
+            let side_of = post
+                .comment
+                .as_deref()
+                .and_then(|link| threads.root(post.thread, link, now() as u64))
+                .map(|post| PostRef { id: post.into(), ..Default::default() });
             let mut last = None;
             for attempt in 0..POST_TRIES {
                 if attempt > 0 {
@@ -517,10 +539,17 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                     blocks: vec![serde_json::from_value(json!({"text": {"markdown": post.context}}))
                         .expect("text block encodes")],
                     links: post.link.iter().cloned().collect(),
+                    side_of: side_of.clone().into(),
                     ..Default::default()
                 };
                 match h.request(&ask) {
                     Ok(answer) => {
+                        if let Some(link) = &post.comment {
+                            threads.remember(post.thread, link, &answer.post.id, now() as u64);
+                            if let Err(e) = threads.save(&path) {
+                                h.log(format!("couldn't save comment threads: {e}"));
+                            }
+                        }
                         h.log(format!(
                             "posted the message for {} in thread {}: message {}",
                             post.to, post.thread, answer.post.id

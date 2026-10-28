@@ -91,6 +91,15 @@ pub fn link(raw: &str) -> Option<String> {
     let v: Value = serde_json::from_str(raw).ok()?;
     let page = v["space_url"].as_str().map(str::trim).filter(|u| u.starts_with("https://") && !u.contains(' '))?;
     let message = words(&v).unwrap_or_default();
+    // The footer names the actual comment thread. A link quoted in the person's words isn't that thread.
+    let footer = if v["asked_in"] == "a comment on the page" {
+        message.rsplit_once("\n\n---\nThe owner of the page ").map(|(_, footer)| footer)
+    } else {
+        None
+    };
+    let message = footer.map(|footer| footer.lines().next().unwrap_or_default()).unwrap_or(&message);
+    let message =
+        message.split_once(") wrote this as a comment on it, to you.").map(|(page, _)| page).unwrap_or(message);
     let at = message.find(&format!("{page}?comment="));
     let comment =
         at.map(|i| &message[i..]).map(|s| s.split(|c: char| c == ')' || c.is_whitespace()).next().unwrap_or(s));
@@ -189,6 +198,15 @@ mod tests {
             got,
             [Said::Message { text: r#"{"content": [1, 2]}"#.into(), raw: r#"{"content": [1, 2]}"#.into() }]
         );
+    }
+
+    #[test]
+    fn the_comment_link_comes_from_the_footer_instead_of_quoted_links() {
+        let page = "https://spacesheep.dev/space/page";
+        let message = format!("look at {page}?comment=another\n\n---\nThe owner of the page “Title” ({page}?comment=actual) wrote this as a comment on it, to you. It is pinned to words quoting {page}?comment=third.");
+        let raw =
+            serde_json::json!({"space_url": page, "asked_in": "a comment on the page", "message": message}).to_string();
+        assert_eq!(link(&raw).as_deref(), Some("https://spacesheep.dev/space/page?comment=actual"));
     }
 
     #[test]

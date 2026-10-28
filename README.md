@@ -61,7 +61,6 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   ```
   Can you make the header blue?
   ```
-
   ````
 
   A second block says where it came from, that it is unsigned, the quoted pin when present, and how to answer:
@@ -81,6 +80,10 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   second block, since the agent may have answered it another way, and that a short answer sent with the post's line closes
   it. Without `--to` that line answers the newest message waiting, so the note says to use it only when this is the
   one.
+- **Comment threads:** the first message starts a post in the publisher's Pointman thread. Follow-ups on the same
+  Spacesheep comment go in that post's side thread. Other comments and Session-tab messages stay separate.
+  `comment-threads.json` in the extension's state folder remembers up to 1,000 roots for 30 days since last use,
+  including across restarts. Moving to another Pointman thread starts a new root there.
 - **Pages whose agent has finished** (despawned, or moved on to a new session): the extension remembers each
   agent's session and thread (`agents.json` in the state folder, pruned to sessions still behind a recent page) and
   keeps listening on the 10 such pages changed most recently. Only sessions an agent here once had count: every node

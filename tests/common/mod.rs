@@ -204,6 +204,7 @@ pub fn agent(handle: &str, session: &str, thread: i64) -> Value {
 pub struct Board {
     pub agents: Arc<Mutex<Vec<Value>>>,
     pub posts: Arc<Mutex<Vec<Value>>>,
+    pub failures: Arc<Mutex<usize>>,
 }
 
 impl Board {
@@ -242,6 +243,7 @@ pub fn spacesheep(fake: &Fake, board: &Board, settings: Value) -> StandIn {
 /// The extension under a stand-in node, with this PATH.
 pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn {
     let (agents, posts) = (board.agents.clone(), board.posts.clone());
+    let failures = board.failures.clone();
     StandIn::new(ROOT)
         .binary(env!("CARGO_BIN_EXE_spacesheep"))
         .settings(settings)
@@ -249,10 +251,15 @@ pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn 
         .env("POINTMAN_SPACESHEEP_FASTER", FASTER)
         .method("agents.sessions", move |_| Ok(json!({"agents": *agents.lock().unwrap()})))
         .on(move |post: BoardPostRequest| {
+            let mut failures = failures.lock().unwrap();
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(anyhow::anyhow!("posting is unavailable"));
+            }
             let mut posts = posts.lock().unwrap();
             // each post as the tests read it: its thread's number and its text
             let thread = post.thread.as_option().and_then(|t| t.id.strip_prefix("thr_")?.parse::<i64>().ok());
-            posts.push(json!({"thread_id": thread, "text": post.text, "blocks": post.blocks, "links": post.links}));
+            posts.push(json!({"thread_id": thread, "text": post.text, "blocks": post.blocks, "links": post.links, "side_of": post.side_of}));
             let id = PostRef { id: format!("post_{}", 1000 + posts.len()), ..Default::default() };
             Ok(BoardPostResponse { post: id.into(), ..Default::default() })
         })

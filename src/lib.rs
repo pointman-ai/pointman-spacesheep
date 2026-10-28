@@ -7,4 +7,5 @@
 pub mod cli;
 pub mod pages;
 pub mod said;
+pub mod threads;
 pub mod words;
