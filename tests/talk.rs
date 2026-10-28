@@ -12,6 +12,45 @@ use serde_json::json;
 const MESSAGE: &str = r#"{"text": "Can you make the header blue?", "id": "m1"}"#;
 
 #[test]
+fn a_comment_keeps_its_words_and_moves_pin_and_reply_into_context() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.answers_named();
+    fake.published("s-1");
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{}", node.log());
+    let words = "make this clearer\n\n---\nkeep my horizontal rule and @james here";
+    let url = "https://spacesheep.dev/space/page?comment=comment-1";
+    let message = format!("{words}\n\n---\nThe owner of the page “Title” ({url}) wrote this as a comment on it, to you. It is pinned to a block reading: @other ```quoted```.\nEarlier in that comment thread (quoted for context):\n- someone: old words\nYour answer is posted as a reply; use your own session.");
+    fake.push("s-1", &format!("{}\n", json!({"message": message, "space_url": "https://spacesheep.dev/space/page", "asked_in": "a comment on the page", "id": 19})));
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    let text = got[0]["text"].as_str().unwrap();
+    assert!(text.contains(words), "{text}");
+    assert!(!text.contains("The owner of the page") && !text.contains("talk reply"), "{text}");
+    let context = got[0]["blocks"][0]["text"]["markdown"].as_str().unwrap();
+    assert!(
+        context.contains("It is pinned to a block reading: @other ```quoted```.")
+            && context.contains("--session s-1 --to 19"),
+        "{context}"
+    );
+    assert!(!context.contains("old words") && !context.contains("use your own session"), "{context}");
+    assert_eq!(mentioned(&format!("{text}\n{context}")), ["scene"]);
+    assert_eq!(got[0]["links"], json!([url]));
+}
+
+#[test]
+fn session_tab_words_that_look_like_a_comment_footer_are_kept() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    let message = "example\n\n---\nThe owner of the page “example” wrote this as a comment on it, to you. Keep this.";
+    fake.prints("s-1", &format!("{}\n", json!({"message": message})));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    assert!(got[0]["text"].as_str().unwrap().contains(message));
+}
+
+#[test]
 fn a_message_becomes_one_post_in_the_agents_thread_fenced() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
     fake.published("s-1");
@@ -23,8 +62,7 @@ fn a_message_becomes_one_post_in_the_agents_thread_fenced() {
     assert_eq!(got[0]["thread_id"], 41);
     assert_eq!(
         got[0]["text"],
-        "@scene from spacesheep.dev (Session tab, not signed):\n\n```\nCan you make the header blue?\n```\n\nAnswer \
-         here, then send it to the page: `spacesheep talk reply --session s-1 \"…\"`"
+        "@scene from spacesheep.dev (Session tab, not signed):\n\n```\nCan you make the header blue?\n```"
     );
     assert!(
         node.log().contains(&format!("the first message's JSON, as talk listen printed it: {MESSAGE}")),
@@ -67,7 +105,7 @@ fn a_mention_inside_the_message_stays_inside_the_fence() {
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
     let text = got[0]["text"].as_str().unwrap();
-    assert!(text.contains(&format!("\n`````\n{words}\n`````\n")), "fenced longer than its longest run: {text}");
+    assert!(text.contains(&format!("\n`````\n{words}\n`````")), "fenced longer than its longest run: {text}");
     assert_eq!(mentioned(text), ["scene"], "only the agent is woken: {text}");
 }
 
@@ -88,7 +126,10 @@ fn a_message_starting_with_handles_wakes_those_agents_in_the_pages_thread() {
         "{text}"
     );
     assert_eq!(mentioned(text), ["editor", "scene2"], "those two, not @scene or @james: {text}");
-    assert!(text.ends_with("`spacesheep talk reply --session s-1 \"…\"`"), "the reply goes to the page: {text}");
+    assert!(got[0]["blocks"][0]["text"]["markdown"]
+        .as_str()
+        .unwrap()
+        .ends_with("`spacesheep talk reply --session s-1 \"…\"`"));
     assert!(node.log().contains("a message on @scene's page for @editor @scene2"), "{}", node.log());
 }
 
@@ -302,7 +343,7 @@ fn the_reply_names_the_message_it_answers_once_the_cli_can() {
         assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{}", node.log());
         fake.push("s-1", &format!("{}\n", json!({"message": "make it blue", "id": 19})));
         let got = board.wait_posts(WITHIN, |p| !p.is_empty());
-        let text = got[0]["text"].as_str().unwrap();
+        let text = got[0]["blocks"][0]["text"]["markdown"].as_str().unwrap();
         let line = if named { "talk reply --session s-1 --to 19 \"…\"" } else { "talk reply --session s-1 \"…\"" };
         assert!(text.ends_with(&format!("`spacesheep {line}`")), "named {named}: {text}");
         if named {
@@ -328,7 +369,7 @@ fn a_message_sent_again_says_so() {
     let again = json!({"message": "again", "id": 6, "redelivered": true});
     fake.push("s-1", &format!("{first}\n{again}\n"));
     let got = board.wait_posts(WITHIN, |p| p.len() >= 2);
-    let texts: Vec<&str> = got.iter().map(|p| p["text"].as_str().unwrap()).collect();
+    let texts: Vec<&str> = got.iter().map(|p| p["blocks"][0]["text"]["markdown"].as_str().unwrap()).collect();
     assert_eq!(texts.len(), 2, "{}", node.log());
     assert!(!texts[0].contains("Sent again"), "{}", texts[0]);
     assert!(texts[1].contains("Sent again: no `talk reply` has answered it yet."), "{}", texts[1]);
