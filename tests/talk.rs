@@ -433,3 +433,30 @@ fn stopping_the_extension_stops_its_listeners_and_a_restart_stops_any_left_behin
     assert!(wait(WITHIN, || matches!(left.try_wait(), Ok(Some(_)))), "{}", node.log());
     assert!(node.log().contains(&format!("stopped a listener left from before, for session s-9 (pid {})", left.id())));
 }
+
+#[test]
+fn a_page_discovered_after_its_publishing_session_ends_still_reaches_the_current_agent() {
+    let fake = Fake::new();
+    let board = Board::with(vec![agent("scene", "s-publisher", 41)]);
+    let state = tempfile::tempdir().unwrap();
+    let node = spacesheep(&fake, &board, on()).state_dir(state.path()).start().unwrap();
+    let remembered = state.path().join("extensions/spacesheep/agents.json");
+    assert!(
+        wait(WITHIN, || std::fs::read_to_string(&remembered).is_ok_and(|s| s.contains("s-publisher"))),
+        "{}",
+        node.log()
+    );
+    board.set_agents(vec![agent("scene", "s-next", 42)]);
+    assert!(
+        wait(WITHIN, || std::fs::read_to_string(&remembered).is_ok_and(|s| s.contains("s-next"))),
+        "{}",
+        node.log()
+    );
+    // Discovery completes after the node has already reported the publisher's next session.
+    fake.prints("s-publisher", "{\"id\":19,\"message\":\"Please update this page\"}\n");
+    fake.published("s-publisher");
+    let posts = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(posts.len(), 1, "{}", node.log());
+    assert_eq!(posts[0]["thread_id"], 42);
+    assert!(posts[0]["text"].as_str().unwrap().starts_with("@scene"));
+}
