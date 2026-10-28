@@ -79,6 +79,10 @@ impl Threads {
         self.prune(now);
     }
 
+    pub fn forget(&mut self, thread: i64, link: &str) {
+        self.entries.retain(|e| e.thread != thread || e.link != link);
+    }
+
     pub fn save(&self, path: &Path) -> io::Result<()> {
         let rows: Vec<_> = self
             .entries

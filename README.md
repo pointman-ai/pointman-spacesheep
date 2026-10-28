@@ -83,7 +83,8 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
 - **Comment threads:** the first message starts a post in the publisher's Pointman thread. Follow-ups on the same
   Spacesheep comment go in that post's side thread. Other comments and Session-tab messages stay separate.
   `comment-threads.json` in the extension's state folder remembers up to 1,000 roots for 30 days since last use,
-  including across restarts. Moving to another Pointman thread starts a new root there.
+  including across restarts. Moving to another Pointman thread starts a new root there. If the original post is deleted, the next message
+  starts a replacement root and later replies use it. Temporary posting failures keep the existing root.
 - **Pages whose agent has finished** (despawned, or moved on to a new session): the extension remembers each
   agent's session and thread (`agents.json` in the state folder, pruned to sessions still behind a recent page) and
   keeps listening on the 10 such pages changed most recently. Only sessions an agent here once had count: every node

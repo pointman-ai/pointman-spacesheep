@@ -205,6 +205,7 @@ pub struct Board {
     pub agents: Arc<Mutex<Vec<Value>>>,
     pub posts: Arc<Mutex<Vec<Value>>>,
     pub failures: Arc<Mutex<usize>>,
+    pub deleted_roots: Arc<Mutex<Vec<String>>>,
 }
 
 impl Board {
@@ -244,6 +245,7 @@ pub fn spacesheep(fake: &Fake, board: &Board, settings: Value) -> StandIn {
 pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn {
     let (agents, posts) = (board.agents.clone(), board.posts.clone());
     let failures = board.failures.clone();
+    let deleted_roots = board.deleted_roots.clone();
     StandIn::new(ROOT)
         .binary(env!("CARGO_BIN_EXE_spacesheep"))
         .settings(settings)
@@ -251,6 +253,11 @@ pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn 
         .env("POINTMAN_SPACESHEEP_FASTER", FASTER)
         .method("agents.sessions", move |_| Ok(json!({"agents": *agents.lock().unwrap()})))
         .on(move |post: BoardPostRequest| {
+            if let Some(root) = post.side_of.as_option() {
+                if deleted_roots.lock().unwrap().contains(&root.id) {
+                    return Err(anyhow::anyhow!("core didn't take the post: side_of: post {} was deleted", root.id));
+                }
+            }
             let mut failures = failures.lock().unwrap();
             if *failures > 0 {
                 *failures -= 1;

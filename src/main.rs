@@ -501,11 +501,7 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         pin,
     );
     let link = said::link(raw);
-    let comment = if pin.is_some() {
-        link.clone().filter(|url| url.split_once("?comment=").is_some_and(|(_, id)| !id.is_empty()))
-    } else {
-        None
-    };
+    let comment = link.clone().filter(|url| url.split_once("?comment=").is_some_and(|(_, id)| !id.is_empty()));
     let _ = posts.send(Post { thread: agent.thread, to: who, text: post, link, context, comment });
 }
 
@@ -523,13 +519,13 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                     Threads::default()
                 })
             });
-            let side_of = post
+            let mut side_of = post
                 .comment
                 .as_deref()
                 .and_then(|link| threads.root(post.thread, link, now() as u64))
                 .map(|post| PostRef { id: post.into(), ..Default::default() });
-            let mut last = None;
-            for attempt in 0..POST_TRIES {
+            let mut attempt = 0;
+            let last = loop {
                 if attempt > 0 {
                     std::thread::sleep(scaled(POST_AGAIN));
                 }
@@ -554,12 +550,31 @@ fn poster(h: Handle, status: Arc<Mutex<Status>>) -> Sender<Post> {
                             "posted the message for {} in thread {}: message {}",
                             post.to, post.thread, answer.post.id
                         ));
-                        last = None;
-                        break;
+                        break None;
                     }
-                    Err(e) => last = Some(format!("{e:#}")),
+                    Err(e) => {
+                        let error = format!("{e:#}");
+                        // A rejected root may have been deleted or moved. Start a new main-stream root for
+                        // this message. Transport failures keep their root: the earlier call may have succeeded.
+                        if side_of.is_some() && error.contains("side_of:") {
+                            side_of = None;
+                            if let Some(link) = &post.comment {
+                                threads.forget(post.thread, link);
+                                if let Err(e) = threads.save(&path) {
+                                    h.log(format!("couldn't save comment threads: {e}"));
+                                }
+                            }
+                            h.log(format!("comment root refused ({error}): starting a new post"));
+                            attempt = 0;
+                            continue;
+                        }
+                        attempt += 1;
+                        if attempt >= POST_TRIES {
+                            break Some(error);
+                        }
+                    }
                 }
-            }
+            };
             if let Some(e) = &last {
                 h.log(format!("couldn't post the message for {} in thread {}: {e}", post.to, post.thread));
             }

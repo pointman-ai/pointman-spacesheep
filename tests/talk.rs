@@ -37,7 +37,7 @@ fn followups_share_the_first_posts_side_thread_and_session_tab_messages_stay_sep
     let got = board.wait_posts(WITHIN, |p| p.len() >= 5);
     assert_eq!(got.len(), 5, "{}", node.log());
     assert!(got[0]["side_of"].is_null(), "{got:?}");
-    assert_eq!(got[1]["side_of"]["value"], "post_1001");
+    assert_eq!(got[1]["side_of"]["id"], "post_1001");
     assert!(got[2..].iter().all(|post| post["side_of"].is_null()), "{got:?}");
 }
 
@@ -60,7 +60,7 @@ fn a_restart_reuses_the_comment_root_but_a_new_pointman_thread_gets_its_own() {
     fake.push("s-1", &comment(2, "a", "after restart"));
     let got = board.wait_posts(WITHIN, |p| p.len() >= 2);
     assert_eq!(got.len(), 2, "{}", node.log());
-    assert_eq!(got[1]["side_of"]["value"], "post_1001");
+    assert_eq!(got[1]["side_of"]["id"], "post_1001");
     board.set_agents(vec![agent("scene", "s-1", 42)]);
     std::thread::sleep(Duration::from_millis(2500)); // the next agents.sessions look updates the listener
     fake.push("s-1", &comment(3, "a", "in a different Pointman thread"));
@@ -83,7 +83,57 @@ fn a_failed_delivery_does_not_establish_a_comment_root() {
     let got = board.wait_posts(WITHIN, |p| p.len() >= 2);
     assert_eq!(got.len(), 2, "{}", node.log());
     assert!(got[0]["side_of"].is_null());
-    assert_eq!(got[1]["side_of"]["value"], "post_1001");
+    assert_eq!(got[1]["side_of"]["id"], "post_1001");
+}
+
+#[test]
+fn a_deleted_root_is_replaced_and_the_next_reply_uses_the_replacement() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{}", node.log());
+    fake.push("s-1", &comment(1, "a", "first"));
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    board.deleted_roots.lock().unwrap().push("post_1001".into());
+    fake.push("s-1", &comment(2, "a", "after the root was deleted"));
+    let got = board.wait_posts(WITHIN, |p| p.len() >= 2);
+    assert_eq!(got.len(), 2, "{}", node.log());
+    assert!(got[1]["side_of"].is_null(), "the replacement is in the main stream: {got:?}");
+    fake.push("s-1", &comment(3, "a", "after the replacement"));
+    let got = board.wait_posts(WITHIN, |p| p.len() >= 3);
+    assert_eq!(got.len(), 3, "{}", node.log());
+    assert_eq!(got[2]["side_of"]["id"], "post_1002");
+}
+
+#[test]
+fn a_temporary_posting_failure_keeps_the_existing_root() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{}", node.log());
+    fake.push("s-1", &comment(1, "a", "first"));
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    *board.failures.lock().unwrap() = 1;
+    fake.push("s-1", &comment(2, "a", "after a temporary failure"));
+    let got = board.wait_posts(WITHIN, |p| p.len() >= 2);
+    assert_eq!(got.len(), 2, "{}", node.log());
+    assert_eq!(got[1]["side_of"]["id"], "post_1001");
+}
+
+#[test]
+fn comments_without_pin_context_still_share_their_side_thread() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    let message = json!({"message": "a comment without a pin", "asked_in": "a comment on the page",
+        "space_url": "https://spacesheep.dev/space/page?comment=a"});
+    fake.prints("s-1", &format!("{message}\n{message}\n"));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    let got = board.wait_posts(WITHIN, |p| p.len() >= 2);
+    assert_eq!(got.len(), 2, "{}", node.log());
+    assert!(got[0]["side_of"].is_null());
+    assert_eq!(got[1]["side_of"]["id"], "post_1001");
 }
 
 #[test]
