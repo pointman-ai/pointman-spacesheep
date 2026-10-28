@@ -92,20 +92,25 @@ struct Agent {
 
 /// What's remembered of each session an agent here has had: its handle and latest thread, kept in the state folder
 /// (agents.json), so a page still has a name and a thread after its agent has gone.
-type Remembered = BTreeMap<String, (String, i64)>;
+type Remembered = BTreeMap<String, (String, i64, u64)>;
+// Page discovery runs asynchronously every five minutes. A session may finish before its deploy is seen.
+const REMEMBER_GRACE: u64 = 30 * 60;
+const REMEMBER_MAX: usize = 1000;
 
-fn remembered_from(text: &str) -> Remembered {
+fn remembered_from(text: &str, at: u64) -> Remembered {
     let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
-    let rows =
-        v.as_object().into_iter().flatten().filter_map(|(s, a)| {
-            Some((s.clone(), (a["handle"].as_str()?.to_string(), a["thread"].as_i64().unwrap_or(0))))
-        });
+    let rows = v.as_object().into_iter().flatten().filter_map(|(s, a)| {
+        Some((
+            s.clone(),
+            (a["handle"].as_str()?.to_string(), a["thread"].as_i64().unwrap_or(0), a["seen_at"].as_u64().unwrap_or(at)),
+        ))
+    });
     rows.collect()
 }
 
 fn remembered_json(r: &Remembered) -> String {
     let m: serde_json::Map<String, Value> =
-        r.iter().map(|(s, (h, t))| (s.clone(), json!({"handle": h, "thread": t}))).collect();
+        r.iter().map(|(s, (h, t, seen))| (s.clone(), json!({"handle": h, "thread": t, "seen_at": seen}))).collect();
     Value::Object(m).to_string()
 }
 
@@ -124,36 +129,40 @@ fn sessions(answer: &AgentsSessionsResponse) -> Value {
     json!({"agents": agents})
 }
 
-/// Each agent here with a session and a thread, as `agents.sessions` gives them, into what's remembered; and a
-/// session forgotten once it's neither an agent's here nor among the latest pages' publishers (patchbay's review).
-/// `publishers` is None until the pages have been read without a problem: until then nothing is forgotten, since an
-/// empty list at a start would forget every finished agent's page.
-fn remember(r: &mut Remembered, answer: &Value, publishers: Option<&[String]>) -> bool {
+/// Keep recently seen local sessions while the asynchronous page scan catches up. Only a session known to
+/// this node can become a listener; an unpublished session expires after the grace period.
+fn remember(r: &mut Remembered, answer: &Value, publishers: Option<&[String]>, at: u64) -> bool {
     let current: Vec<&str> =
         answer["agents"].as_array().into_iter().flatten().filter_map(|a| a["session_id"].as_str()).collect();
-    let before = r.len();
-    if let Some(publishers) = publishers {
-        r.retain(|s, _| current.contains(&s.as_str()) || publishers.contains(s));
+    let protected = |s: &str| current.contains(&s) || publishers.is_some_and(|p| p.iter().any(|p| p == s));
+    let before = r.clone();
+    if publishers.is_some() {
+        r.retain(|s, (_, _, seen)| protected(s) || at.saturating_sub(*seen) <= REMEMBER_GRACE);
     }
-    let mut changed = r.len() != before;
     for a in answer["agents"].as_array().into_iter().flatten() {
         let handle = a["handle"].as_str().unwrap_or("").trim_start_matches('@');
         let (Some(session), Some(thread)) = (a["session_id"].as_str(), a["thread_id"].as_i64().filter(|t| *t > 0))
         else {
             continue;
         };
-        if words::handle_ok(handle) && session_ok(session) && r.get(session) != Some(&(handle.to_string(), thread)) {
-            r.insert(session.to_string(), (handle.to_string(), thread));
-            changed = true;
+        if words::handle_ok(handle) && session_ok(session) {
+            r.insert(session.to_string(), (handle.to_string(), thread, at));
         }
     }
-    changed
+    while r.len() > REMEMBER_MAX {
+        let oldest =
+            r.iter().filter(|(s, _)| !protected(s)).min_by_key(|(_, (_, _, seen))| *seen).map(|(s, _)| s.clone());
+        let Some(oldest) = oldest else {
+            break;
+        };
+        r.remove(&oldest);
+    }
+    *r != before
 }
 
-/// The sessions to listen for: each agent here whose current session published a page, from `agents.sessions`;
-/// then the pages whose agent here has finished (a session an agent here once had, so never another node's, or the
-/// person's own), the most recently changed first, up to GONE_PAGES, as remembered. Also why a publisher here isn't listened for, and how many agents here haven't published a page in their
-/// current session.
+/// Listen on current publishing sessions and remembered earlier ones from this node, most recently changed
+/// first, up to GONE_PAGES. A continuing owner uses its current thread; a departed owner is marked gone.
+/// Unknown and other-node sessions stay out. Also report publishers without a thread and current nonpublishers.
 fn wanted(answer: &Value, publishers: &[String], remembered: &Remembered) -> (Vec<Agent>, Vec<String>, usize) {
     let (mut agents, mut waiting, mut others) = (Vec::<Agent>::new(), Vec::new(), 0);
     let current: Vec<&str> =
@@ -183,8 +192,21 @@ fn wanted(answer: &Value, publishers: &[String], remembered: &Remembered) -> (Ve
         .filter(|p| !current.contains(&p.as_str()))
         .filter_map(|p| Some((p, remembered.get(p)?)))
         .take(GONE_PAGES);
-    for (session, (handle, thread)) in gone {
-        agents.push(Agent { handle: handle.clone(), session: session.clone(), thread: *thread, gone: true });
+    for (session, (handle, thread, _)) in gone {
+        // The publishing session may have ended while its agent continues in another session. Keep the
+        // upstream session for replies, but deliver to that agent's current thread.
+        let latest = answer["agents"].as_array().into_iter().flatten().find(|a| {
+            a["handle"].as_str().map(|h| h.trim_start_matches('@')) == Some(handle.as_str())
+                && a["session_id"].as_str().is_some_and(session_ok)
+                && a["thread_id"].as_i64().is_some_and(|t| t > 0)
+        });
+        let latest_thread = latest.and_then(|a| a["thread_id"].as_i64());
+        agents.push(Agent {
+            handle: handle.clone(),
+            session: session.clone(),
+            thread: latest_thread.unwrap_or(*thread),
+            gone: latest_thread.is_none(),
+        });
     }
     (agents, waiting, others)
 }
@@ -569,7 +591,8 @@ impl Talk {
         }
         let dir = Some(self.h.state_dir()).filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(std::env::temp_dir);
         self.state = dir.clone();
-        self.remembered = remembered_from(&std::fs::read_to_string(dir.join("agents.json")).unwrap_or_default());
+        self.remembered =
+            remembered_from(&std::fs::read_to_string(dir.join("agents.json")).unwrap_or_default(), now() as u64);
         let g = Arc::new(Groups { path: dir.join("listeners.json"), pids: Mutex::default() });
         g.stop_leftovers(&self.h);
         self.groups = Some(g.clone());
@@ -639,7 +662,7 @@ impl Talk {
             let st = lock(&self.status);
             (st.publishers.clone(), st.pages_at.is_some() && st.pages_problem.is_none())
         };
-        if remember(&mut self.remembered, &answer, read.then_some(publishers.as_slice())) {
+        if remember(&mut self.remembered, &answer, read.then_some(publishers.as_slice()), now() as u64) {
             let _ = std::fs::write(self.state.join("agents.json"), remembered_json(&self.remembered));
         }
         let (agents, waiting, others) = wanted(&answer, &publishers, &self.remembered);
@@ -1009,7 +1032,7 @@ mod tests {
         ]});
         // s-gone: docrules', here once; s-nixos: an agent alive on another node; s-james: James's own session
         let publishers: Vec<String> = ["s-1", "s-4", "s 5", "s-gone", "s-nixos", "s-james"].map(String::from).into();
-        let remembered = Remembered::from([("s-gone".to_string(), ("docrules".to_string(), 41))]);
+        let remembered = Remembered::from([("s-gone".to_string(), ("docrules".to_string(), 41, 0))]);
         let (agents, waiting, others) = wanted(&answer, &publishers, &remembered);
         assert_eq!(
             agents,
@@ -1030,7 +1053,7 @@ mod tests {
         assert_eq!(others, 2, "quiet and fresh");
         assert!(wanted(&answer, &[], &Remembered::new()).0.is_empty());
         let many: Vec<String> = (0..20).map(|i| format!("gone-{i}")).collect();
-        let all: Remembered = many.iter().map(|s| (s.clone(), ("old".to_string(), 7))).collect();
+        let all: Remembered = many.iter().map(|s| (s.clone(), ("old".to_string(), 7, 0))).collect();
         let (agents, _, _) = wanted(&answer, &many, &all);
         assert_eq!(agents.len(), GONE_PAGES, "finished agents' pages, the newest {GONE_PAGES} only");
         assert!(agents.iter().all(|a| a.gone) && agents[0].session == "gone-0");
@@ -1045,19 +1068,56 @@ mod tests {
             {"handle": "fresh", "session_id": "s-2", "thread_id": null},
             {"handle": "Bad Name", "session_id": "s-3", "thread_id": 6},
         ]});
-        assert!(remember(&mut r, &answer, Some(&[])));
-        assert!(!remember(&mut r, &answer, Some(&[])), "nothing new the second time");
-        assert_eq!(r, Remembered::from([("s-1".to_string(), ("scene".to_string(), 5))]));
-        assert_eq!(remembered_from(&remembered_json(&r)), r);
+        assert!(remember(&mut r, &answer, Some(&[]), 0));
+        assert!(!remember(&mut r, &answer, Some(&[]), 0), "nothing new the second time");
+        assert_eq!(r, Remembered::from([("s-1".to_string(), ("scene".to_string(), 5, 0))]));
+        assert_eq!(remembered_from(&remembered_json(&r), 0), r);
         // scene moves on: its old session stays while it published a page, and goes once it's off the latest pages
         let moved = json!({"agents": [{"handle": "scene", "session_id": "s-9", "thread_id": 5}]});
-        remember(&mut r, &moved, Some(&["s-1".to_string()]));
+        remember(&mut r, &moved, Some(&["s-1".to_string()]), 0);
         assert!(r.contains_key("s-1") && r.contains_key("s-9"));
         // before the pages are read (a start), nothing is forgotten
-        remember(&mut r, &moved, None);
+        remember(&mut r, &moved, None, 0);
         assert!(r.contains_key("s-1"), "kept until a page read says otherwise");
-        assert!(remember(&mut r, &moved, Some(&[])));
+        assert!(remember(&mut r, &moved, Some(&[]), 3600));
         assert_eq!(r.keys().collect::<Vec<_>>(), ["s-9"]);
+    }
+
+    #[test]
+    fn a_finished_publisher_survives_delayed_page_discovery_and_restart() {
+        let original = json!({"agents":[{"handle":"builder","session_id":"publish-session","thread_id":41}]});
+        let moved = json!({"agents":[{"handle":"builder","session_id":"next-session","thread_id":42}]});
+        let mut r = Remembered::new();
+        remember(&mut r, &original, Some(&[]), 1000);
+        // The agent changes session before the asynchronous five-minute page scan sees its deploy.
+        remember(&mut r, &moved, Some(&[]), 1060);
+        let mut r = remembered_from(&remembered_json(&r), 1100);
+        let publishers = vec!["publish-session".to_string()];
+        remember(&mut r, &moved, Some(&publishers), 1300);
+        let selected = wanted(&moved, &publishers, &r).0;
+        assert_eq!(
+            selected,
+            vec![Agent { handle: "builder".into(), session: "publish-session".into(), thread: 42, gone: false }]
+        );
+        let ended = wanted(&json!({"agents":[]}), &publishers, &r).0;
+        assert!(ended[0].gone && ended[0].thread == 41, "a departed owner remains a finished page");
+        remember(&mut r, &moved, Some(&publishers), 10_000);
+        assert!(r.contains_key("publish-session"), "a discovered publisher survives the grace period");
+        remember(&mut r, &moved, Some(&[]), 10_001);
+        assert!(!r.contains_key("publish-session"), "an unpublished expired session is eventually forgotten");
+    }
+
+    #[test]
+    fn legacy_state_gets_a_grace_period_and_recent_unpublished_history_is_bounded() {
+        let mut r = remembered_from(r#"{"old":{"handle":"builder","thread":41}}"#, 1000);
+        remember(&mut r, &json!({"agents":[]}), Some(&[]), 1100);
+        assert!(r.contains_key("old"));
+        for id in 0..REMEMBER_MAX {
+            r.insert(format!("s-{id}"), ("builder".into(), 41, 1100));
+        }
+        remember(&mut r, &json!({"agents":[]}), Some(&[]), 1100);
+        assert_eq!(r.len(), REMEMBER_MAX);
+        assert!(!r.contains_key("old"), "oldest unprotected record is evicted first");
     }
 
     #[test]

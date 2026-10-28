@@ -81,9 +81,9 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   second block, since the agent may have answered it another way, and that a short answer sent with the post's line closes
   it. Without `--to` that line answers the newest message waiting, so the note says to use it only when this is the
   one.
-- **Pages whose agent has finished** (despawned, or moved on to a new session): the extension remembers each
-  agent's session and thread (`agents.json` in the state folder, pruned to sessions still behind a recent page) and
-  keeps listening on the 10 such pages changed most recently. Only sessions an agent here once had count: every node
+- **Earlier publishing sessions:** the extension remembers each local session and thread (`agents.json`),
+  including a grace period for delayed page discovery. A continuing agent receives messages in its current thread.
+  It keeps listening on the 10 earlier publishing sessions whose pages changed most recently. Only sessions an agent here once had count: every node
   reads the same account's pages, so another node's agents and the person's own sessions are left alone. A message
   there that calls agents reaches them, in the page's thread; one that calls nobody gets a reply on the page saying
   the agent has finished and how to ask another.
@@ -150,3 +150,14 @@ it within 30 minutes, and `pointman upgrade` moves nodes onto it.
 ## Licence
 
 MIT. See `LICENSE`.
+
+### A publishing session can end before discovery
+
+The page scan runs every five minutes. Locally observed sessions stay in `agents.json` for 30 minutes after
+last being seen, even before a page scan lists them as publishers. Once discovered, a publisher stays while its
+page is retained. At most 1,000 unprotected records are kept; current sessions and known publishers are protected.
+Older state files without timestamps get a grace period on load.
+
+When an agent continues under a new session, messages on its earlier pages go to its current thread. Replies still
+name the original publishing session. Only an agent already known on this node can receive them; another node's
+or an unknown session's pages are not adopted. An owner that has left still gets the existing finished-page behavior.
