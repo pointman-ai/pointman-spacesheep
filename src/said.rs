@@ -69,7 +69,7 @@ pub fn asked_in(raw: &str) -> Option<String> {
     v["asked_in"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
 }
 
-/// Older Spacesheep servers append context and reply instructions to the comment's words. Split only the
+/// Spacesheep appends context and reply instructions to the comment's words. Split only the
 /// recognized comment footer, from the end, so a horizontal rule in the person's own message is preserved.
 pub fn comment_parts<'a>(text: &'a str, raw: &str) -> (&'a str, Option<&'a str>) {
     if asked_in(raw).as_deref() != Some("a comment on the page") {
