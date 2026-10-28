@@ -16,7 +16,7 @@ name = "Spacesheep"
 version = "0.8.1"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
-node = ">=0.4,<1"
+node = ">=0.4.1,<1"
 platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64", "linux-arm64"]
 # its robot account's face (@spacesheep, Pointman's EXT-85): the Spacesheep sheep
 avatar = "avatar.png"
