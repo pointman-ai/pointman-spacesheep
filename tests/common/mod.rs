@@ -252,7 +252,7 @@ pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn 
             let mut posts = posts.lock().unwrap();
             // each post as the tests read it: its thread's number and its text
             let thread = post.thread.as_option().and_then(|t| t.value.strip_prefix("thr_")?.parse::<i64>().ok());
-            posts.push(json!({"thread_id": thread, "text": post.text}));
+            posts.push(json!({"thread_id": thread, "text": post.text, "blocks": post.blocks, "links": post.links}));
             let id = PostId { value: format!("post_{}", 1000 + posts.len()), ..Default::default() };
             Ok(BoardPostResponse { post: id.into(), ..Default::default() })
         })
