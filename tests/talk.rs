@@ -60,10 +60,7 @@ fn a_message_becomes_one_post_in_the_agents_thread_fenced() {
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
     assert_eq!(got[0]["thread_id"], 41);
-    assert_eq!(
-        got[0]["text"],
-        "@scene from spacesheep.dev (Session tab, not signed):\n\n```\nCan you make the header blue?\n```"
-    );
+    assert_eq!(got[0]["text"], "@scene\n\n```\nCan you make the header blue?\n```");
     assert!(
         node.log().contains(&format!("the first message's JSON, as talk listen printed it: {MESSAGE}")),
         "{}",
@@ -121,10 +118,7 @@ fn a_message_starting_with_handles_wakes_those_agents_in_the_pages_thread() {
     assert_eq!(got.len(), 1, "{}", node.log());
     assert_eq!(got[0]["thread_id"], 41, "the page's thread");
     let text = got[0]["text"].as_str().unwrap();
-    assert!(
-        text.starts_with("@editor @scene2 from spacesheep.dev (Session tab of `@scene`'s page, not signed):"),
-        "{text}"
-    );
+    assert!(text.starts_with("@editor @scene2\n\n"), "{text}");
     assert_eq!(mentioned(text), ["editor", "scene2"], "those two, not @scene or @james: {text}");
     assert!(got[0]["blocks"][0]["text"]["markdown"]
         .as_str()
@@ -152,7 +146,7 @@ fn only_agents_whose_session_published_a_page_are_listened_for() {
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
     assert_eq!(got[0]["thread_id"], 42);
-    assert!(got[0]["text"].as_str().unwrap().starts_with("@quiet from spacesheep.dev"), "{}", got[0]["text"]);
+    assert!(got[0]["text"].as_str().unwrap().starts_with("@quiet\n\n"), "{}", got[0]["text"]);
     let reads = fake.calls().iter().filter(|c| *c == "versions page-s-1 --json").count();
     assert_eq!(reads, 1, "a page unchanged isn't read again: {:?}", fake.calls());
 }
@@ -294,7 +288,7 @@ fn a_finished_agents_page_reaches_only_the_agents_it_calls() {
     assert_eq!(got.len(), 1, "{}", node.log());
     assert_eq!(got[0]["thread_id"], 41, "the page's own thread, remembered");
     let text = got[0]["text"].as_str().unwrap();
-    let header = "@editor from spacesheep.dev (a comment on `@docrules`'s page, not signed):";
+    let header = "@editor\n\n";
     assert!(text.starts_with(header), "{text}");
     assert_eq!(mentioned(text), ["editor"], "{text}");
 

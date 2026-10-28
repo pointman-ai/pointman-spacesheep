@@ -67,10 +67,7 @@ pub fn place(via: Option<&str>, whose: Option<&str>) -> String {
 
 /// The visible message: only the addressed agents and the person's words. Keep the fence so handles in
 /// page text cannot wake people who weren't addressed.
-pub fn post(to: &[String], publisher: &str, text: &str, via: Option<&str>) -> String {
-    let own = matches!(to, [one] if one == publisher);
-    let whose = format!("`@{publisher}`'s page");
-    let page = place(via, (!own).then_some(whose.as_str()));
+pub fn post(to: &[String], text: &str) -> String {
     let to = to.iter().map(|h| format!("@{h}")).collect::<Vec<_>>().join(" ");
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let text = text.trim_matches('\n').trim_end();
@@ -79,11 +76,22 @@ pub fn post(to: &[String], publisher: &str, text: &str, via: Option<&str>) -> St
         None => (text, String::new()),
     };
     let f = fence(text);
-    format!("{to} from spacesheep.dev ({page}, not signed):\n\n{f}\n{text}\n{f}{cut}")
+    format!("{to}\n\n{f}\n{text}\n{f}{cut}")
 }
 
 /// Context lives in a separate block. Fence the pin too: quoted page text is never a mention or an instruction.
-pub fn context(session: &str, answers: Option<i64>, again: bool, pin: Option<&str>) -> String {
+pub fn context(
+    to: &[String],
+    publisher: &str,
+    via: Option<&str>,
+    session: &str,
+    answers: Option<i64>,
+    again: bool,
+    pin: Option<&str>,
+) -> String {
+    let own = matches!(to, [one] if one == publisher);
+    let whose = format!("`@{publisher}`'s page");
+    let page = place(via, (!own).then_some(whose.as_str()));
     let pin = pin
         .map(|pin| {
             let pin: String = pin.chars().take(2000).collect();
@@ -104,7 +112,7 @@ pub fn context(session: &str, answers: Option<i64>, again: bool, pin: Option<&st
         }
     };
     format!(
-        "{pin}{again}Answer here, then send it to the page: `spacesheep talk reply --session {session}{answers} \"…\"`"
+        "From spacesheep.dev ({page}, not signed).\n\n{pin}{again}Answer here, then send it to the page: `spacesheep talk reply --session {session}{answers} \"…\"`"
     )
 }
 
@@ -138,8 +146,8 @@ mod tests {
     use super::*;
 
     /// As the listener posts a message on `publisher`'s own page, from its Session tab.
-    fn post_on(publisher: &str, text: &str, _session: &str) -> String {
-        post(&recipients(text, publisher), publisher, text, None)
+    fn post_on(publisher: &str, text: &str) -> String {
+        post(&recipients(text, publisher), text)
     }
 
     #[test]
@@ -151,9 +159,9 @@ mod tests {
     }
 
     #[test]
-    fn a_post_mentions_the_agent_fences_the_words_and_names_the_session() {
-        let p = post_on("scene", "hi @james\r\nsee ```x```", "abc-123");
-        assert_eq!(p, "@scene from spacesheep.dev (Session tab, not signed):\n\n````\nhi @james\nsee ```x```\n````");
+    fn a_post_mentions_only_the_agent_and_fences_the_words() {
+        let p = post_on("scene", "hi @james\r\nsee ```x```");
+        assert_eq!(p, "@scene\n\n````\nhi @james\nsee ```x```\n````");
     }
 
     #[test]
@@ -168,19 +176,15 @@ mod tests {
         assert!(called("hey @editor").is_empty(), "only at the start");
         assert!(called("@editor's cut is long").is_empty(), "not addressing");
         assert!(called("@-x hi").is_empty() && called("@ hi").is_empty() && called("").is_empty());
-        let p = post_on("scene", "@editor, cut the intro", "abc-123");
-        assert!(
-            p.starts_with(
-                "@editor from spacesheep.dev (Session tab of `@scene`'s page, not signed):\n\n```\n@editor, cut"
-            ),
-            "{p}"
-        );
-        assert!(context("abc-123", None, false, None).ends_with("`spacesheep talk reply --session abc-123 \"…\"`"));
-        assert!(post_on("scene", "@scene hi", "s").starts_with("@scene from spacesheep.dev (Session tab, not signed)"));
+        let p = post_on("scene", "@editor, cut the intro");
+        assert!(p.starts_with("@editor\n\n```\n@editor, cut"), "{p}");
+        assert!(context(&["editor".into()], "scene", None, "abc-123", None, false, None)
+            .ends_with("`spacesheep talk reply --session abc-123 \"…\"`"));
+        assert!(post_on("scene", "@scene hi").starts_with("@scene\n\n"));
     }
 
     #[test]
-    fn the_header_says_where_it_was_written_and_whose_page() {
+    fn the_context_header_says_where_it_was_written_and_whose_page() {
         let comment = Some("a comment on the page");
         assert_eq!(place(comment, None), "a comment on the page");
         assert_eq!(place(comment, Some("`@scene`'s page")), "a comment on `@scene`'s page");
@@ -190,17 +194,18 @@ mod tests {
         assert_eq!(place(Some("@james\nsays hi"), None), "Session tab");
         assert_eq!(place(Some("a comment on the page @x"), Some("`@scene`'s page")), "Session tab of `@scene`'s page");
         let to = vec!["editor".to_string()];
-        let p = post(&to, "docrules", "@pm.editor fix it", comment);
-        assert!(p.starts_with("@editor from spacesheep.dev (a comment on `@docrules`'s page, not signed):"), "{p}");
+        let p = post(&to, "@pm.editor fix it");
+        assert!(p.starts_with("@editor\n\n```\n@pm.editor fix it"), "{p}");
         assert!(!p.contains("talk reply"));
-        let p = context("s-d", Some(19), false, None);
+        let p = context(&to, "docrules", comment, "s-d", Some(19), false, None);
+        assert!(p.starts_with("From spacesheep.dev (a comment on `@docrules`'s page, not signed)."), "{p}");
         assert!(p.ends_with("`spacesheep talk reply --session s-d --to 19 \"…\"`"), "the message it answers: {p}");
         assert!(!p.contains("Sent again"), "{p}");
-        let p = context("s-d", Some(19), true, None);
-        assert!(p.starts_with("Sent again: no `talk reply` has answered it yet."), "outside the fence: {p}");
+        let p = context(&to, "docrules", comment, "s-d", Some(19), true, None);
+        assert!(p.contains("Sent again: no `talk reply` has answered it yet."), "{p}");
         assert!(!p.contains("only message waiting"), "the line names the message: {p}");
         assert!(p.ends_with("--to 19 \"…\"`"), "{p}");
-        let p = context("s-d", None, true, None);
+        let p = context(&to, "docrules", comment, "s-d", None, true, None);
         assert!(p.contains("and it's the only message waiting,"), "no --to: a reply answers the newest: {p}");
         assert_eq!(recipients("hello", "scene"), ["scene"]);
         assert_eq!(recipients("@pm.editor hello", "scene"), ["editor"]);
@@ -208,7 +213,7 @@ mod tests {
 
     #[test]
     fn long_words_are_cut_outside_the_fence() {
-        let p = post_on("scene", &"x".repeat(TEXT_MAX + 5), "s");
+        let p = post_on("scene", &"x".repeat(TEXT_MAX + 5));
         assert!(p.contains(&format!("{}\n```\n\n(cut: 5 more characters)", "x".repeat(10))), "{}", &p[p.len() - 200..]);
         assert!(p.chars().count() < 40_000);
     }

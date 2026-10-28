@@ -52,26 +52,33 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   5 s, doubling to 5 minutes. An agent with a new session, or Talk turned off, has its listener stopped. Each
   listener is a process group of its own, kept in the state folder (`listeners.json`), so a restart stops any left
   from a crash.
-- **Each message** is a `board.post` in the thread of the publisher's latest run, as the machine. Its mention wakes
+- **Each message** is a `board.post` in the thread of the publisher's latest run, as the extension's robot account. Its mention wakes
   the publisher:
 
   ````
-  @scene from spacesheep.dev (Session tab, not signed):
+  @scene
 
   ```
   Can you make the header blue?
   ```
 
-  Answer here, then send it to the page: `spacesheep talk reply --session 205b1fbd-… "…"`
   ````
+
+  A second block says where it came from, that it is unsigned, the quoted pin when present, and how to answer:
+
+  ```text
+  From spacesheep.dev (Session tab, not signed).
+
+  Answer here, then send it to the page: `spacesheep talk reply --session 205b1fbd-… "…"`
+  ```
 
   The words are in a code fence longer than any run of backticks in them, so a mention inside wakes nobody (the
   board reads no mention in code). The reply names the session listened for, which is the page's, whatever
   session the agent wakes in. Once the CLI's `talk reply` takes `--to` (its help, read every hour, says
   `[--to MESSAGE_ID]`), it also names the message's `id`: otherwise Spacesheep answers the session's newest
   message, and with comments waiting on two pages an answer lands under the other one. A message Spacesheep sends
-  again (`redelivered`: a new listener gets back, for a day, what no `talk reply` answered) says so under the
-  fence, since the agent may have answered it another way, and that a short answer sent with the post's line closes
+  again (`redelivered`: a new listener gets back, for a day, what no `talk reply` answered) says so in the
+  second block, since the agent may have answered it another way, and that a short answer sent with the post's line closes
   it. Without `--to` that line answers the newest message waiting, so the note says to use it only when this is the
   one.
 - **Pages whose agent has finished** (despawned, or moved on to a new session): the extension remembers each
