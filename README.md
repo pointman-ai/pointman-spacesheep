@@ -52,10 +52,11 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   5 s, doubling to 5 minutes. An agent with a new session, or Talk turned off, has its listener stopped. Each
   listener is a process group of its own, kept in the state folder (`listeners.json`), so a restart stops any left
   from a crash.
-- **Each message** is a `board.post` in the page's own thread, as the extension's robot account: the thread its first
-  version was published from (the run of the first session here that pushed it), kept in `pages.json` once it's
-  known, so a page's comments stay with it when its agent goes on to work in another thread. A page not read yet
-  goes to the thread of the publisher's latest run. Its mention wakes the publisher:
+- **Each message** is a `board.post` in the page's own thread, as the extension's robot account: the thread the first
+  session here that pushed it was running in when it did (its first version's `created_at`, against that session's
+  threads as each look saw them, kept in `threads.json`), set once in `pages.json`, so a page's comments stay with it
+  when its agent goes on to work in another thread. A session seen before 0.8.2 kept that history counts its last
+  known thread. A page not read yet goes to the thread of the publisher's latest run. Its mention wakes the publisher:
 
   ````
   @scene

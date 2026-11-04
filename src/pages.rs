@@ -34,19 +34,46 @@ pub fn spaces(text: &str) -> Option<Vec<Space>> {
     )
 }
 
-/// The sessions that pushed a version, from `versions <space> --json`, the first version's first, each once; None if
-/// it isn't that answer.
-pub fn sessions(text: &str) -> Option<Vec<String>> {
+/// The sessions that pushed a version, from `versions <space> --json`, the first version's first, each once with
+/// when its first version was pushed (`created_at`, "" when it's not given); None if it isn't that answer.
+pub fn sessions(text: &str) -> Option<Vec<(String, String)>> {
     let v: Value = serde_json::from_str(text.trim()).ok()?;
     let mut versions: Vec<&Value> = v["versions"].as_array()?.iter().collect();
     versions.sort_by_key(|x| x["number"].as_i64().unwrap_or(i64::MAX));
-    let mut out: Vec<String> = Vec::new();
-    for s in versions.into_iter().filter_map(|x| x["pushed_by"]["session_id"].as_str()) {
-        if !out.iter().any(|o| o == s) {
-            out.push(s.to_string());
+    let mut out: Vec<(String, String)> = Vec::new();
+    for x in versions {
+        let Some(s) = x["pushed_by"]["session_id"].as_str() else { continue };
+        if !out.iter().any(|(o, _)| o == s) {
+            out.push((s.to_string(), x["created_at"].as_str().unwrap_or("").to_string()));
         }
     }
     Some(out)
+}
+
+/// Where this node has seen each of its sessions' agents run, for a page's own thread (EXT-128).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Seen {
+    /// Each session's threads as the looks saw them, oldest first: from when (seconds since 1970), which thread.
+    pub history: BTreeMap<String, Vec<(i64, i64)>>,
+    /// Each session's last thread known (agents.json): for one not seen since 0.8.2 began keeping its history.
+    pub latest: BTreeMap<String, i64>,
+}
+
+impl Seen {
+    /// The thread this session's agent was running in when it pushed (`at`, Spacesheep's `created_at`): the last one
+    /// seen from then or before; the first seen, for a push before it was seen (or with no time); its last known
+    /// thread, for a session with no history.
+    pub fn thread_at(&self, session: &str, at: &str) -> Option<i64> {
+        let thread = match self.history.get(session).filter(|h| !h.is_empty()) {
+            Some(h) => {
+                let at = secs(at);
+                let before = at.and_then(|at| h.iter().rev().find(|(since, _)| *since <= at));
+                before.unwrap_or(&h[0]).1
+            }
+            None => *self.latest.get(session)?,
+        };
+        Some(thread).filter(|t| *t > 0)
+    }
 }
 
 /// What's known of a page: when it last changed, the sessions that pushed it (the first version's first), and the
@@ -55,6 +82,8 @@ pub fn sessions(text: &str) -> Option<Vec<String>> {
 pub struct Page {
     pub updated_at: String,
     pub sessions: Vec<String>,
+    /// When each session's first version was pushed (Spacesheep's `created_at`).
+    pub pushed: BTreeMap<String, String>,
     /// Whether `sessions` is in the versions' order: a page kept before 0.8.2 isn't, so its versions are read again
     /// while it's in the latest list.
     pub ordered: bool,
@@ -64,8 +93,10 @@ pub struct Page {
 }
 
 impl Page {
-    pub fn new(updated_at: &str, sessions: Vec<String>) -> Page {
-        Page { updated_at: updated_at.to_string(), sessions, ordered: true, thread: 0 }
+    pub fn new(updated_at: &str, sessions: Vec<(String, String)>) -> Page {
+        let pushed = sessions.iter().filter(|(_, at)| !at.is_empty()).cloned().collect();
+        let sessions = sessions.into_iter().map(|(s, _)| s).collect();
+        Page { updated_at: updated_at.to_string(), sessions, pushed, ordered: true, thread: 0 }
     }
 }
 
@@ -81,7 +112,14 @@ impl Known {
             let sessions = p["sessions"].as_array()?.iter().filter_map(Value::as_str).map(String::from).collect();
             // `thread` came with the sessions' order: without it, the order isn't known
             let thread = p["thread"].as_i64();
-            Some((id.clone(), Page { updated_at, sessions, ordered: thread.is_some(), thread: thread.unwrap_or(0) }))
+            let pushed = p["pushed"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(s, at)| Some((s.clone(), at.as_str()?.to_string())))
+                .collect();
+            let (ordered, thread) = (thread.is_some(), thread.unwrap_or(0));
+            Some((id.clone(), Page { updated_at, sessions, pushed, ordered, thread }))
         });
         Known(pages.collect())
     }
@@ -94,6 +132,7 @@ impl Known {
                 let mut page = serde_json::json!({"updated_at": p.updated_at, "sessions": p.sessions});
                 if p.ordered {
                     page["thread"] = p.thread.into();
+                    page["pushed"] = serde_json::json!(p.pushed);
                 }
                 (id.clone(), page)
             })
@@ -124,18 +163,19 @@ impl Known {
     }
 
     /// Its versions read again: its new sessions, the thread it was published from kept.
-    pub fn read(&mut self, s: &Space, sessions: Vec<String>) {
+    pub fn read(&mut self, s: &Space, sessions: Vec<(String, String)>) {
         let thread = self.0.get(&s.id).map(|p| p.thread).unwrap_or(0);
         self.0.insert(s.id.clone(), Page { thread, ..Page::new(&s.updated_at, sessions) });
     }
 
-    /// Each page without its thread yet gets the thread of the first session that pushed it whose thread is known
-    /// (`threads`: each session here, its agent's run's thread). The pages that got one, with it. A page whose
-    /// sessions' order isn't known gets none: its messages go to its agent's latest thread, as before 0.8.2.
-    pub fn settle(&mut self, threads: &BTreeMap<String, i64>) -> Vec<(String, i64)> {
+    /// Each page without its thread yet gets the thread the first session here that pushed it was running in when
+    /// it did ([`Seen::thread_at`]). The pages that got one, with it. A page whose sessions' order isn't known gets
+    /// none: its messages go to its agent's latest thread, as before 0.8.2.
+    pub fn settle(&mut self, seen: &Seen) -> Vec<(String, i64)> {
         let mut settled = Vec::new();
         for (id, p) in self.0.iter_mut().filter(|(_, p)| p.thread == 0 && p.ordered) {
-            if let Some(t) = p.sessions.iter().find_map(|s| threads.get(s).copied().filter(|t| *t > 0)) {
+            let at = |s: &str| p.pushed.get(s).map(String::as_str).unwrap_or("");
+            if let Some(t) = p.sessions.iter().find_map(|s| seen.thread_at(s, at(s))) {
                 p.thread = t;
                 settled.push((id.clone(), t));
             }
@@ -178,6 +218,23 @@ pub fn iso(secs: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60)
 }
 
+/// Spacesheep's time ("2026-11-04T08:05:08.589Z") as seconds since 1970, to the second; None if it isn't one.
+pub fn secs(at: &str) -> Option<i64> {
+    let num = |r: std::ops::Range<usize>| at.get(r)?.parse::<i64>().ok();
+    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hh, mm, ss) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if at.get(4..5) != Some("-") || at.get(10..11) != Some("T") || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // a civil date to days (Howard Hinnant's algorithm), the other way from iso()
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) * 86_400 + hh * 3600 + mm * 60 + ss)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,11 +246,18 @@ mod tests {
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["p1", "p2"]);
         assert_eq!(spaces("not json"), None);
         let versions = r#"{"space": {"uuid": "p1"}, "versions": [
-            {"number": 2, "pushed_by": {"label": "Claude Code", "session_id": "s-2"}},
-            {"number": 1, "pushed_by": {"label": "Claude Code", "session_id": "s-1"}},
+            {"number": 3, "created_at": "2026-11-04T09:00:00.000Z", "pushed_by": {"session_id": "s-1"}},
+            {"number": 2, "created_at": "2026-11-04T08:06:16.089Z", "pushed_by": {"label": "Claude Code", "session_id": "s-2"}},
+            {"number": 1, "created_at": "2026-11-04T08:05:08.589Z", "pushed_by": {"label": "Claude Code", "session_id": "s-1"}},
             {"number": 0, "via": "web"}]}"#;
-        assert_eq!(sessions(versions).unwrap(), ["s-1", "s-2"], "the first version's first");
+        let got = sessions(versions).unwrap();
+        let want = [("s-1", "2026-11-04T08:05:08.589Z"), ("s-2", "2026-11-04T08:06:16.089Z")];
+        assert_eq!(got, want.map(|(s, at)| (s.to_string(), at.to_string())), "the first version's first, at its first");
         assert_eq!(sessions("{}"), None);
+    }
+
+    fn who(sessions: &[&str]) -> Vec<(String, String)> {
+        sessions.iter().map(|s| (s.to_string(), String::new())).collect()
     }
 
     #[test]
@@ -201,29 +265,66 @@ mod tests {
         let mut known = Known::default();
         let p1 = Space { id: "p1".into(), updated_at: "t1".into() };
         assert!(known.stale(&p1));
-        known.read(&p1, vec!["s-1".into()]);
+        known.read(&p1, who(&["s-1"]));
         assert!(!known.stale(&p1));
         assert!(known.stale(&Space { id: "p1".into(), updated_at: "t2".into() }));
         let again = Known::from_json(&known.to_json());
         assert_eq!(again, known);
         assert_eq!(again.publishers(), ["s-1"]);
-        known.read(&Space { id: "p2".into(), updated_at: "t9".into() }, vec!["s-2".into(), "s-1".into()]);
+        known.read(&Space { id: "p2".into(), updated_at: "t9".into() }, who(&["s-2", "s-1"]));
         assert_eq!(known.publishers(), ["s-1", "s-2"], "the newest page's sessions first, its latest first, each once");
     }
 
     #[test]
+    fn spacesheeps_times_in_seconds() {
+        assert_eq!(secs("2026-10-23T08:23:10"), Some(1_792_743_790));
+        assert_eq!(secs("2026-11-04T08:05:08.589Z"), Some(1_793_779_508));
+        for t in [0, 951_782_400, 1_700_000_000, 1_792_743_790] {
+            assert_eq!(secs(&iso(t)), Some(t));
+        }
+        assert_eq!(secs(""), None);
+        assert_eq!(secs("t1"), None);
+        assert_eq!(secs("2026-13-04T08:05:08Z"), None);
+    }
+
+    #[test]
+    fn a_session_pushed_from_the_thread_it_was_running_in_then() {
+        let at = |t: &str| secs(t).unwrap();
+        let seen = Seen {
+            history: BTreeMap::from([(
+                "s-1".to_string(),
+                vec![(at("2026-11-04T08:00:00Z"), 19090), (at("2026-11-04T09:20:00Z"), 25460)],
+            )]),
+            latest: BTreeMap::from([("s-1".to_string(), 25460), ("old".to_string(), 4159), ("none".to_string(), 0)]),
+        };
+        assert_eq!(seen.thread_at("s-1", "2026-11-04T08:05:08.589Z"), Some(19090), "where it was then");
+        assert_eq!(seen.thread_at("s-1", "2026-11-04T09:23:38Z"), Some(25460));
+        assert_eq!(seen.thread_at("s-1", "2026-11-04T07:57:40Z"), Some(19090), "before it was seen: the first seen");
+        assert_eq!(seen.thread_at("s-1", ""), Some(19090), "no time: the first seen");
+        assert_eq!(seen.thread_at("old", "2026-11-04T08:05:08Z"), Some(4159), "no history: its last known");
+        assert_eq!(seen.thread_at("none", ""), None);
+        assert_eq!(seen.thread_at("elsewhere", ""), None);
+    }
+
+    #[test]
     fn a_page_keeps_the_thread_it_was_published_from() {
-        let threads = |t: &[(&str, i64)]| t.iter().map(|(s, t)| (s.to_string(), *t)).collect::<BTreeMap<_, _>>();
+        let seen = |h: Vec<(&str, Vec<(i64, i64)>)>| Seen {
+            history: h.into_iter().map(|(s, t)| (s.to_string(), t)).collect(),
+            latest: BTreeMap::new(),
+        };
         let p1 = Space { id: "p1".into(), updated_at: "t1".into() };
+        let pushed = |s: &str, t: i64| (s.to_string(), iso(t));
         let mut known = Known::default();
-        // published by a session on another machine first, then by s-1 here, in thread 19090
-        known.read(&p1, vec!["elsewhere".into(), "s-1".into(), "s-2".into()]);
-        assert_eq!(known.settle(&threads(&[])), [], "no session's thread known yet");
+        // published by a session on another machine first, then by s-1 here at 100, while it ran in thread 19090
+        known.read(&p1, vec![pushed("elsewhere", 50), pushed("s-1", 100), pushed("s-2", 300)]);
+        assert_eq!(known.settle(&seen(vec![])), [], "no session's thread known yet");
         assert_eq!(known.threads(), BTreeMap::new());
-        assert_eq!(known.settle(&threads(&[("s-2", 25460), ("s-1", 19090)])), [("p1".to_string(), 19090)]);
+        let moved = vec![(90, 19090), (200, 25460)];
+        let settled = known.settle(&seen(vec![("s-1", moved), ("s-2", vec![(290, 25460)])]));
+        assert_eq!(settled, [("p1".to_string(), 19090)], "where s-1 ran when it pushed, not where it is now");
         // its agent works in another thread now, and pushes the page again from there: it stays in its own
-        known.read(&Space { id: "p1".into(), updated_at: "t2".into() }, vec!["s-1".into(), "s-2".into(), "s-3".into()]);
-        assert_eq!(known.settle(&threads(&[("s-1", 25460), ("s-3", 25460)])), []);
+        known.read(&Space { id: "p1".into(), updated_at: "t2".into() }, vec![pushed("s-1", 100), pushed("s-3", 400)]);
+        assert_eq!(known.settle(&seen(vec![("s-1", vec![(200, 25460)]), ("s-3", vec![(390, 25460)])])), []);
         assert_eq!(known.threads(), BTreeMap::from([("p1".to_string(), 19090)]));
         let again = Known::from_json(&known.to_json());
         assert_eq!(again, known);
@@ -233,11 +334,19 @@ mod tests {
         assert_eq!(old.publishers(), ["s-1", "s-2"]);
         assert!(old.stale(&p1), "read again for the order");
         let mut old = old;
-        assert_eq!(old.settle(&threads(&[("s-1", 19090)])), [], "not in the versions' order");
+        let latest = Seen {
+            latest: BTreeMap::from([("s-1".to_string(), 19090), ("s-2".to_string(), 25460)]),
+            ..Seen::default()
+        };
+        assert_eq!(old.settle(&latest), [], "not in the versions' order");
         assert_eq!(Known::from_json(&old.to_json()), old, "still without the order");
-        old.read(&p1, vec!["s-1".into(), "s-2".into()]);
+        old.read(&p1, vec![pushed("s-1", 100), pushed("s-2", 300)]);
         assert!(!old.stale(&p1));
-        assert_eq!(old.settle(&threads(&[("s-1", 19090), ("s-2", 25460)])), [("p1".to_string(), 19090)]);
+        assert_eq!(
+            old.settle(&latest),
+            [("p1".to_string(), 19090)],
+            "a session with no history: its last known thread"
+        );
     }
 
     #[test]
@@ -247,7 +356,7 @@ mod tests {
         assert_eq!(iso(951_782_400), "2000-02-29T00:00:00");
         let now = 1_792_743_790; // 2026-10-23T08:23:10
         assert_eq!(iso(now), "2026-10-23T08:23:10");
-        let page = |at: &str, who: &str| Page::new(at, vec![who.to_string()]);
+        let page = |at: &str, who: &str| Page::new(at, vec![(who.to_string(), String::new())]);
         let mut known = Known(BTreeMap::from([
             ("listed".to_string(), page("2026-08-01T00:00:00Z", "s-1")),
             ("left".to_string(), page("2026-10-21T09:00:00.120Z", "s-2")),
