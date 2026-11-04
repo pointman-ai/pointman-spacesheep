@@ -38,6 +38,8 @@ fn the_real_cli_on_a_machine_not_signed_in_says_so_in_health() {
     assert_eq!(listeners["state"], "STATE_STOPPED", "{health}");
     assert_eq!(listeners["why"], "not listening: this machine isn't signed in to Spacesheep", "{health}");
     assert!(node.log().contains("talk status: not signed in"), "{}", node.log());
+    // npx named its copy, and the CLI ran from it with node, not through npx
+    assert!(node.log().contains("running npx's spacesheep@latest at /"), "{}", node.log());
     assert!(!node.log().contains("listening for @scene"), "{}", node.log());
     let fix = node.call("health.fix", json!({"part": "account", "action": "ACTION_AUTH"})).unwrap();
     assert!(fix["message"].as_str().unwrap().contains("npx -y spacesheep@latest login"), "{fix}");

@@ -47,7 +47,10 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   (`pages.json`). That list is the latest 50, so a page that leaves it is kept for 30 days from its last change,
   up to 500 pages: a burst of other pages (core's docs job updates dozens at once) doesn't silence it. Every 60 s it reads the node's agents (`agents.sessions`), and for each publisher with a thread
   it runs `spacesheep talk listen --session <id>` (the machine's `spacesheep`, else `npx -y spacesheep@latest`),
-  signed in with the machine's own key in `~/.config/spacesheep`. So one process per agent that has a page, not
+  signed in with the machine's own key in `~/.config/spacesheep`. With npx, it asks npx where its copy of
+  `spacesheep@latest` is (`npx -y -p spacesheep@latest -c 'command -v spacesheep'`, hourly, which also brings the
+  copy up to date) and runs that copy with `node`, so no `npm exec` (~100 MB) stays under each listener; if npx
+  can't say, or the copy goes (npm's cache cleaned) and npx can't fetch it again, the CLI runs through npx. So one process per agent that has a page, not
   one per agent: a node may run dozens. A listener that ends (its link gone, the CLI failing) starts again after
   5 s, doubling to 5 minutes. An agent with a new session, or Talk turned off, has its listener stopped. Each
   listener is a process group of its own, kept in the state folder (`listeners.json`), so a restart stops any left

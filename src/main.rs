@@ -27,7 +27,7 @@ use pointman_extension::v1::health::{part::State, Action, Part};
 use pointman_extension::v1::ThreadRef;
 use pointman_extension::{Extension, Handle};
 use serde_json::{json, Value};
-use spacesheep::cli::{self, Cli};
+use spacesheep::cli::{self, Cli, Via};
 use spacesheep::pages::{self, Known, Seen};
 use spacesheep::said::{self, Reader, Said};
 use spacesheep::words::{self, clock, now};
@@ -48,7 +48,8 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often the pages are read for who published them, and how long each read may take.
 const PAGES_EVERY: Duration = Duration::from_secs(300);
 const PAGES_TIMEOUT: Duration = Duration::from_secs(60);
-/// How often the CLI's help is read for whether `talk reply` takes `--to` (npx's spacesheep@latest moves on its own).
+/// How often the CLI's help is read for whether `talk reply` takes `--to` (npx's spacesheep@latest moves on its own),
+/// and npx is asked where its copy of spacesheep@latest is (bringing it up to date).
 const HELP_EVERY: Duration = Duration::from_secs(3600);
 /// A listener that ends is started again after this, doubling each time it ends again, to AGAIN_MAX; one that ran
 /// HEALTHY or delivered a message starts the wait afresh.
@@ -393,16 +394,29 @@ fn update(status: &Mutex<Status>, session: &str, f: impl FnOnce(&mut Listening))
     }
 }
 
+/// The CLI runs start with, as the last tick found it: each listener reads it when it starts `talk listen` again.
+type Current = Arc<Mutex<Option<Cli>>>;
+
 /// One listener's life: `talk listen` for its session, its messages posted, and started again when it ends.
-fn listen(h: Handle, cli: Cli, line: Arc<Line>, posts: Sender<Post>, status: Arc<Mutex<Status>>, groups: Arc<Groups>) {
+fn listen(
+    h: Handle,
+    current: Current,
+    line: Arc<Line>,
+    posts: Sender<Post>,
+    status: Arc<Mutex<Status>>,
+    groups: Arc<Groups>,
+) {
     let session = lock(&line.agent).session.clone();
     let mut wait = scaled(AGAIN_FIRST);
     while !line.stop.load(Ordering::SeqCst) {
         let started = Instant::now();
-        let (ended, delivered) = match cli.command(&["talk", "listen", "--session", &session]).spawn() {
-            Ok(child) => run_once(&h, &cli, child, &line, &posts, &status, &groups),
-            Err(e) => (format!("couldn't start {}: {e}", cli.describe()), false),
-        };
+        let cli = lock(&current).clone();
+        let (ended, delivered) =
+            match cli.as_ref().map(|c| (c, c.command(&["talk", "listen", "--session", &session]).spawn())) {
+                Some((cli, Ok(child))) => run_once(&h, cli, child, &line, &posts, &status, &groups),
+                Some((cli, Err(e))) => (format!("couldn't start {}: {e}", cli.describe()), false),
+                None => ("no CLI to run".to_string(), false),
+            };
         if line.stop.load(Ordering::SeqCst) {
             break;
         }
@@ -624,6 +638,13 @@ struct Talk {
     scanned: Option<Instant>,
     /// The account's switch or the publishers changed (on their own threads): look at the next tick.
     look_now: Arc<AtomicBool>,
+    current: Current,
+    /// With npx: its copy of spacesheep@latest, run with node, once npx has said where it is (EXT-127); when it was
+    /// last asked, whether an ask is running, and whether one has answered yet.
+    copy: Arc<Mutex<Option<Cli>>>,
+    copied: Option<Instant>,
+    copying: Arc<AtomicBool>,
+    asked: Arc<AtomicBool>,
 }
 
 impl Talk {
@@ -652,6 +673,7 @@ impl Talk {
         let places: Vec<PathBuf> = cli::PLACES.iter().map(PathBuf::from).collect();
         let Some(cli) = cli::find(std::env::var_os("PATH").as_deref(), &places, own.as_deref()) else {
             self.stop_all();
+            *lock(&self.current) = None;
             let mut st = lock(&self.status);
             st.cli = None;
             st.problem = Some(
@@ -661,6 +683,15 @@ impl Talk {
             );
             return;
         };
+        let cli = match cli.via {
+            Via::Npx => match self.through_npx(cli) {
+                Some(cli) => cli,
+                // npx hasn't answered its first ask yet: nothing starts on npx only to stay on it
+                None => return,
+            },
+            _ => cli,
+        };
+        *lock(&self.current) = Some(cli.clone());
         lock(&self.status).cli = Some(cli.describe());
         self.check_account(&cli);
         if lock(&self.status).account == Account::On {
@@ -674,12 +705,45 @@ impl Talk {
             return;
         }
         self.next = started + scaled(EVERY);
-        self.look(groups, cli);
+        self.look(groups);
         lock(&self.status).looked = true;
         self.event();
     }
 
-    fn look(&mut self, groups: Arc<Groups>, cli: Cli) {
+    /// With npx: its copy of spacesheep@latest with node, asked for on a thread of its own each HELP_EVERY, or at
+    /// once when the copy has gone (npm's cache cleaned). npx itself when it can't say; None until the first ask
+    /// has answered.
+    fn through_npx(&mut self, npx: Cli) -> Option<Cli> {
+        let known = lock(&self.copy).clone();
+        let gone = known.as_ref().is_some_and(|c| !c.there());
+        let due = gone || self.copied.is_none_or(|at| at.elapsed() >= scaled(HELP_EVERY));
+        if due && !self.copying.swap(true, Ordering::SeqCst) {
+            self.copied = Some(Instant::now());
+            let (h, got, copying, asked, npx) =
+                (self.h.clone(), self.copy.clone(), self.copying.clone(), self.asked.clone(), npx.clone());
+            std::thread::spawn(move || {
+                let copy = cli::copy_from(&npx, STATUS_TIMEOUT);
+                let mut was = lock(&got);
+                match &copy {
+                    Ok(c) if was.as_ref() != Some(c) => h.log(format!("running {}", c.describe())),
+                    Ok(_) => {}
+                    Err(e) => {
+                        h.log(format!("npx didn't say where its spacesheep@latest is ({e}): running it through npx"))
+                    }
+                }
+                *was = copy.ok();
+                asked.store(true, Ordering::SeqCst);
+                copying.store(false, Ordering::SeqCst);
+            });
+        }
+        match known.filter(|_| !gone) {
+            Some(copy) => Some(copy),
+            None if self.asked.load(Ordering::SeqCst) => Some(npx),
+            None => None,
+        }
+    }
+
+    fn look(&mut self, groups: Arc<Groups>) {
         let account = lock(&self.status).account.clone();
         match account {
             Account::On => {}
@@ -762,9 +826,9 @@ impl Talk {
                 },
             );
             lock(&self.lines).insert(agent.session.clone(), line.clone());
-            let (h, cli, posts, status, groups) =
-                (self.h.clone(), cli.clone(), self.posts.clone(), self.status.clone(), groups.clone());
-            std::thread::spawn(move || listen(h, cli, line, posts, status, groups));
+            let (h, current, posts, status, groups) =
+                (self.h.clone(), self.current.clone(), self.posts.clone(), self.status.clone(), groups.clone());
+            std::thread::spawn(move || listen(h, current, line, posts, status, groups));
         }
     }
 
@@ -1044,6 +1108,11 @@ fn main() -> anyhow::Result<()> {
         scanning: Arc::new(AtomicBool::new(false)),
         scanned: None,
         look_now: Arc::new(AtomicBool::new(false)),
+        current: Current::default(),
+        copy: Arc::new(Mutex::new(None)),
+        copied: None,
+        copying: Arc::new(AtomicBool::new(false)),
+        asked: Arc::new(AtomicBool::new(false)),
     }));
 
     let t = talk.clone();

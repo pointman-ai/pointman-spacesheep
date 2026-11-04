@@ -23,10 +23,17 @@ pub const WITHIN: Duration = Duration::from_secs(10);
 
 /// The fake CLI. It finds its folder from how it was started, so each test's is a link to this one script, written
 /// once: one test writing a script while another starts a process is "text file busy" on Linux. As `npx` it takes
-/// `-y spacesheep@latest` first.
+/// `-y spacesheep@latest` first, and names its copy (`.bin/spacesheep`) when the test made one; as `node` it runs the
+/// script it's given.
 const FAKE: &str = r#"#!/bin/sh
 here=$(dirname "$0")
+if [ "$(basename "$0")" = node ]; then exec "$@"; fi
+if [ "$(basename "$here")" = .bin ]; then here=$(dirname "$here"); fi
 echo "$*" >> "$here/calls.log"
+if [ "$1 $2 $3 $4 $5" = "-y -p spacesheep@latest -c command -v spacesheep" ]; then
+  if [ -e "$here/.bin/spacesheep" ]; then echo "$here/.bin/spacesheep"; exit 0; fi
+  echo "npm error could not determine executable to run" >&2; exit 1
+fi
 if [ "$1" = "-y" ]; then shift 2; fi
 case "$1 $2" in
   "talk listen")
@@ -89,6 +96,20 @@ impl Fake {
     /// As `npx`, for a machine with no `spacesheep`.
     pub fn npx() -> Fake {
         Fake::named("npx")
+    }
+
+    /// As `npx` with its copy of spacesheep@latest (`.bin/spacesheep`), and `node` beside it.
+    pub fn npx_with_copy() -> Fake {
+        let fake = Fake::named("npx");
+        std::os::unix::fs::symlink(script(), fake.file("node")).unwrap();
+        std::fs::create_dir(fake.file(".bin")).unwrap();
+        std::os::unix::fs::symlink(script(), fake.file(".bin/spacesheep")).unwrap();
+        fake
+    }
+
+    /// npm's cache cleaned: npx's copy has gone.
+    pub fn copy_gone(&self) {
+        std::fs::remove_file(self.file(".bin/spacesheep")).unwrap();
     }
 
     fn named(name: &str) -> Fake {
