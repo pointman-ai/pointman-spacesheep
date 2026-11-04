@@ -1253,7 +1253,7 @@ mod tests {
     #[test]
     fn the_accounts_switch_from_talk_status() {
         let ran = |code, stdout: &str, stderr: &str| {
-            Ok(cli::Ran { code: Some(code), stdout: stdout.into(), stderr: stderr.into() })
+            Ok(cli::Ran { code: Some(code), stdout: stdout.into(), stderr: stderr.into(), ..Default::default() })
         };
         assert_eq!(account(&ran(0, "{\n  \"pro\": true,\n  \"enabled\": true\n}", "")), Account::On);
         assert!(

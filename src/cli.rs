@@ -34,6 +34,9 @@ pub struct Cli {
     pub prefix: Vec<String>,
     /// The PATH it runs with: the node's, with the program's own folder first, so its `node` is found.
     pub path: OsString,
+    /// npx's copy's version, from its package.json: npx brings the copy up to date where it is, so a new version
+    /// is a new `Cli`, and the log says so.
+    pub version: Option<String>,
 }
 
 impl Cli {
@@ -43,7 +46,8 @@ impl Cli {
             Via::Own => format!("spacesheep at {}", self.program.display()),
             Via::Npx => format!("npx -y spacesheep@latest ({})", self.program.display()),
             Via::Copy => format!(
-                "npx's spacesheep@latest at {}, run with {}",
+                "npx's spacesheep@latest{} at {}, run with {}",
+                self.version.as_ref().map(|v| format!(" ({v})")).unwrap_or_default(),
                 self.prefix.first().map(String::as_str).unwrap_or_default(),
                 self.program.display()
             ),
@@ -90,7 +94,7 @@ pub fn find(path_var: Option<&OsStr>, places: &[PathBuf], own: Option<&Path>) ->
     path.extend(path_var.map(|p| std::env::split_paths(p).collect::<Vec<_>>()).unwrap_or_default());
     path.dedup();
     let path = std::env::join_paths(path).unwrap_or_else(|_| path_var.unwrap_or_default().to_owned());
-    Some(Cli { via, program, prefix, path })
+    Some(Cli { via, program, prefix, path, version: None })
 }
 
 /// npx's copy of `spacesheep@latest`, fetched or brought up to date first as any npx run does: the CLI's script, as
@@ -107,14 +111,29 @@ pub fn copy_from(npx: &Cli, timeout: Duration) -> Result<Cli, String> {
         (Some(0), None) => return Err("npx didn't name its copy".into()),
         (code, _) => {
             let code = code.map(|c| c.to_string()).unwrap_or_else(|| "by a signal".into());
-            return Err(format!("npx exited {code}: {}", ran.stderr));
+            let said = [&ran.stderr, &ran.npm].into_iter().find(|s| !s.is_empty());
+            return Err(format!("npx exited {code}{}", said.map(|s| format!(": {s}")).unwrap_or_default()));
         }
     };
     let program = std::env::split_paths(&npx.path)
         .map(|d| d.join("node"))
         .find(|p| executable(p))
         .ok_or_else(|| "no node beside npx or on the node's PATH".to_string())?;
-    Ok(Cli { via: Via::Copy, program, prefix: vec![script.to_string_lossy().into_owned()], path: npx.path.clone() })
+    // .bin/spacesheep links to the package's bin/spacesheep.js; its package.json is beside bin
+    let version = script
+        .canonicalize()
+        .ok()
+        .and_then(|s| Some(s.parent()?.parent()?.join("package.json")))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v["version"].as_str().map(String::from));
+    Ok(Cli {
+        via: Via::Copy,
+        program,
+        prefix: vec![script.to_string_lossy().into_owned()],
+        path: npx.path.clone(),
+        version,
+    })
 }
 
 /// Stops a run and everything it started: SIGTERM to its group, then SIGKILL if its leader is still there after
@@ -149,12 +168,14 @@ pub fn stop_leftover(pid: u32) -> bool {
     true
 }
 
-/// A short run's end: its exit code, stdout, and its stderr's last words.
+/// A short run's end: its exit code, stdout, and its stderr's last words; and npm's own last error, for a run of npx
+/// itself (`last_words` leaves npm's lines out).
 #[derive(Debug, Clone, Default)]
 pub struct Ran {
     pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+    pub npm: String,
 }
 
 /// Runs the CLI once and waits up to `timeout` for it (`talk status`).
@@ -188,7 +209,8 @@ pub fn run(cli: &Cli, args: &[&str], timeout: Duration) -> std::io::Result<Ran> 
     };
     let stdout = String::from_utf8_lossy(&reading.join().unwrap_or_default()).into_owned();
     let stderr = String::from_utf8_lossy(&erring.join().unwrap_or_default()).into_owned();
-    Ok(Ran { code, stdout, stderr: last_words(&stderr) })
+    let npm = stderr.lines().map(str::trim).rfind(|l| l.starts_with("npm error")).unwrap_or_default().to_string();
+    Ok(Ran { code, stdout, stderr: last_words(&stderr), npm })
 }
 
 /// Whether this CLI's `talk reply` takes `--to`, the message it answers (CLI pull 55: its help says
@@ -259,9 +281,10 @@ mod tests {
             program: node,
             prefix: vec![script.to_string_lossy().into_owned()],
             path: dir.path().as_os_str().to_owned(),
+            version: Some("1.35.0".into()),
         };
         assert!(copy.there());
-        assert!(copy.describe().starts_with("npx's spacesheep@latest at "), "{}", copy.describe());
+        assert!(copy.describe().starts_with("npx's spacesheep@latest (1.35.0) at "), "{}", copy.describe());
         std::fs::remove_file(&script).unwrap();
         assert!(!copy.there(), "npm's cache cleaned");
     }
