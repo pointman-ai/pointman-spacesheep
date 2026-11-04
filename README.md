@@ -52,8 +52,11 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   5 s, doubling to 5 minutes. An agent with a new session, or Talk turned off, has its listener stopped. Each
   listener is a process group of its own, kept in the state folder (`listeners.json`), so a restart stops any left
   from a crash.
-- **Each message** is a `board.post` in the thread of the publisher's latest run, as the extension's robot account. Its mention wakes
-  the publisher:
+- **Each message** is a `board.post` in the page's own thread, as the extension's robot account: the thread the first
+  session here that pushed it was running in when it did (its first version's `created_at`, against that session's
+  threads as each look saw them, kept in `threads.json`), set once in `pages.json`, so a page's comments stay with it
+  when its agent goes on to work in another thread. A session seen before 0.8.2 kept that history counts its last
+  known thread. A page not read yet goes to the thread of the publisher's latest run. Its mention wakes the publisher:
 
   ````
   @scene
@@ -85,7 +88,7 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   agent's session and thread (`agents.json` in the state folder) and keeps listening on the 10 such pages changed most
   recently. Only sessions an agent here once had count: every node reads the same account's pages, so another node's
   agents and the person's own sessions are left alone. When the page's agent is still here in a new session, its
-  messages reach the agent in its current thread, as on a page of its current session; replies still name the page's
+  messages reach the agent in the page's own thread, as on a page of its current session; replies still name the page's
   own session. Otherwise a message that calls agents reaches them in the page's thread, and one that calls nobody gets
   a reply on the page saying the agent has finished and how to ask another.
 - **A session that ends before its page is found:** the page scan runs every five minutes, so a session can end

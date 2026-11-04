@@ -6,9 +6,9 @@
 //! or as soon as either changes. A look, while the account's Talk is on: the node's `agents.sessions`, then a
 //! listener for each agent whose session published a page, with a thread, and none for the rest. A listener is a
 //! thread running `spacesheep talk listen --session <id>`, started again with a growing wait whenever it ends. Each
-//! message goes out as a `board.post` in the publisher's thread, for the agents it starts by calling or else the
-//! publisher, in order, from a thread of their own. The listeners' process groups are kept in the state folder, so
-//! a restart stops any left behind.
+//! message goes out as a `board.post` in the page's own thread (the one it was published from; else the publisher's
+//! latest), for the agents it starts by calling or else the publisher, in order, from a thread of their own. The
+//! listeners' process groups are kept in the state folder, so a restart stops any left behind.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
@@ -28,7 +28,7 @@ use pointman_extension::v1::ThreadRef;
 use pointman_extension::{Extension, Handle};
 use serde_json::{json, Value};
 use spacesheep::cli::{self, Cli};
-use spacesheep::pages::{self, Known};
+use spacesheep::pages::{self, Known, Seen};
 use spacesheep::said::{self, Reader, Said};
 use spacesheep::words::{self, clock, now};
 
@@ -112,6 +112,41 @@ fn remembered_json(r: &Remembered) -> String {
     let m: serde_json::Map<String, Value> =
         r.iter().map(|(s, (h, t, seen))| (s.clone(), json!({"handle": h, "thread": t, "seen_at": seen}))).collect();
     Value::Object(m).to_string()
+}
+
+/// Each session's threads as the looks saw them: from when (seconds since 1970), which thread, oldest first.
+type History = BTreeMap<String, Vec<(i64, i64)>>;
+/// The changes kept for each session, at most: the oldest go first.
+const HISTORY_MAX: usize = 50;
+
+fn history_from(text: &str) -> History {
+    serde_json::from_str(text).unwrap_or_default()
+}
+
+/// Each agent here, its session's thread now, into its history when it has moved (or is new); and the history of a
+/// session no longer remembered forgotten. Whether anything changed.
+fn moved(history: &mut History, answer: &Value, remembered: &Remembered, at: i64) -> bool {
+    let before = history.len();
+    history.retain(|s, _| remembered.contains_key(s));
+    let mut changed = history.len() != before;
+    for a in answer["agents"].as_array().into_iter().flatten() {
+        let (Some(session), Some(thread)) = (a["session_id"].as_str(), a["thread_id"].as_i64().filter(|t| *t > 0))
+        else {
+            continue;
+        };
+        if !remembered.contains_key(session) {
+            continue;
+        }
+        let h = history.entry(session.to_string()).or_default();
+        if h.last().map(|(_, t)| *t) != Some(thread) {
+            h.push((at, thread));
+            if h.len() > HISTORY_MAX {
+                h.remove(0);
+            }
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// `agents.sessions`' answer as the JSON [`remember`] and [`wanted`] read: each agent's `handle`, `session_id` and
@@ -273,6 +308,8 @@ struct Status {
     /// The sessions that published a page, the most recently changed page's first, as last read; when, and what
     /// went wrong reading them.
     publishers: Vec<String>,
+    /// Each page's own thread, where its messages go, by the page's id: the thread it was published from (EXT-128).
+    page_threads: BTreeMap<String, i64>,
     pages_at: Option<f64>,
     pages_problem: Option<String>,
     account: Account,
@@ -503,11 +540,14 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         return;
     }
     let who = to.iter().map(|t| format!("@{t}")).collect::<Vec<_>>().join(" ");
+    // the page's own thread, the one it was published from; else, for a page not read yet, its agent's latest
+    let own = said::page(raw).and_then(|p| lock(status).page_threads.get(&p).copied());
+    let thread = own.unwrap_or(agent.thread);
     h.log(format!(
-        "a message on {} for {who} ({} characters): posting it in thread {}",
+        "a message on {} for {who} ({} characters): posting it in thread {thread}{}",
         page_of(agent),
         text.chars().count(),
-        agent.thread
+        if own.is_some() { ", the page's" } else { "" }
     ));
     lock(status).last = Some((now(), who.clone()));
     let post = words::post(&to, text);
@@ -520,7 +560,7 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         said::redelivered(raw),
         pin,
     );
-    let _ = posts.send(Post { thread: agent.thread, to: who, text: post, link: said::link(raw), context });
+    let _ = posts.send(Post { thread, to: who, text: post, link: said::link(raw), context });
 }
 
 /// Posts go out one at a time, in order, each tried POST_TRIES times.
@@ -575,6 +615,9 @@ struct Talk {
     groups: Option<Arc<Groups>>,
     state: PathBuf,
     remembered: Remembered,
+    /// Each remembered session's threads as the looks saw them, oldest first (threads.json): a page's own thread is
+    /// the one its session ran in when it pushed it (EXT-128).
+    history: History,
     checking: Arc<AtomicBool>,
     checked: Option<Instant>,
     scanning: Arc<AtomicBool>,
@@ -593,6 +636,7 @@ impl Talk {
         self.state = dir.clone();
         self.remembered =
             remembered_from(&std::fs::read_to_string(dir.join("agents.json")).unwrap_or_default(), now() as u64);
+        self.history = history_from(&std::fs::read_to_string(dir.join("threads.json")).unwrap_or_default());
         let g = Arc::new(Groups { path: dir.join("listeners.json"), pids: Mutex::default() });
         g.stop_leftovers(&self.h);
         self.groups = Some(g.clone());
@@ -665,6 +709,9 @@ impl Talk {
         if remember(&mut self.remembered, &answer, read.then_some(publishers.as_slice()), now() as u64) {
             let _ = std::fs::write(self.state.join("agents.json"), remembered_json(&self.remembered));
         }
+        if moved(&mut self.history, &answer, &self.remembered, now() as i64) {
+            let _ = std::fs::write(self.state.join("threads.json"), json!(self.history).to_string());
+        }
         let (agents, waiting, others) = wanted(&answer, &publishers, &self.remembered);
         {
             let mut st = lock(&self.status);
@@ -695,7 +742,7 @@ impl Talk {
             }
             match agent.gone {
                 false => self.h.log(format!(
-                    "listening for @{} (session {}), posting in thread {}",
+                    "listening for @{} (session {}), its latest thread {}",
                     agent.handle, agent.session, agent.thread
                 )),
                 true => self.h.log(format!("listening on {} (session {})", page_of(&agent), agent.session)),
@@ -764,6 +811,11 @@ impl Talk {
             cli.clone(),
             self.state.join("pages.json"),
         );
+        // where each session here has run, and when: a new page's own thread is where its first session pushed it
+        let seen = Seen {
+            history: self.history.clone(),
+            latest: self.remembered.iter().map(|(s, (_, thread, _))| (s.clone(), *thread)).collect(),
+        };
         std::thread::spawn(move || {
             let due = lock(&status).helped_at.is_none_or(|at| now() - at >= scaled(HELP_EVERY).as_secs_f64());
             if due {
@@ -778,14 +830,15 @@ impl Talk {
                     st.answers_named = named;
                 }
             }
-            let got = publishers(&h, &cli, &file);
+            let got = publishers(&h, &cli, &file, &seen);
             let mut st = lock(&status);
             match got {
-                Ok(who) => {
+                Ok((who, page_threads)) => {
                     if who != st.publishers {
                         look_now.store(true, Ordering::SeqCst);
                     }
                     st.publishers = who;
+                    st.page_threads = page_threads;
                     st.pages_at = Some(now());
                     st.pages_problem = None;
                 }
@@ -825,8 +878,14 @@ impl Talk {
     }
 }
 
-/// Who published the account's latest pages (`list --json`), each page's versions read only when it has changed.
-fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<Vec<String>, String> {
+/// Who published the account's latest pages (`list --json`), each page's versions read only when it has changed; and
+/// each page's own thread, where it's known (`seen`: where each session here has run).
+fn publishers(
+    h: &Handle,
+    cli: &Cli,
+    file: &std::path::Path,
+    seen: &Seen,
+) -> Result<(Vec<String>, BTreeMap<String, i64>), String> {
     let ran = cli::run(cli, &["list", "--json"], PAGES_TIMEOUT).map_err(|e| e.to_string())?;
     let list = match ran.code {
         Some(0) => pages::spaces(&ran.stdout)
@@ -839,9 +898,7 @@ fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<Vec<Strin
     for space in stale {
         let ran = cli::run(cli, &["versions", &space.id, "--json"], PAGES_TIMEOUT);
         match ran.as_ref().ok().filter(|r| r.code == Some(0)).and_then(|r| pages::sessions(&r.stdout)) {
-            Some(who) => {
-                known.0.insert(space.id.clone(), (space.updated_at.clone(), who));
-            }
+            Some(who) => known.read(space, who),
             None => h.log(format!(
                 "couldn't read who published page {}: {}",
                 space.id,
@@ -852,8 +909,11 @@ fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<Vec<Strin
             )),
         }
     }
+    for (page, thread) in known.settle(seen) {
+        h.log(format!("page {page}'s messages go to thread {thread}, where it was published"));
+    }
     let _ = std::fs::write(file, known.to_json());
-    Ok(known.publishers())
+    Ok((known.publishers(), known.threads()))
 }
 
 /// The account's switch as the log says it.
@@ -978,6 +1038,7 @@ fn main() -> anyhow::Result<()> {
         groups: None,
         state: PathBuf::new(),
         remembered: Remembered::new(),
+        history: History::new(),
         checking: Arc::new(AtomicBool::new(false)),
         checked: None,
         scanning: Arc::new(AtomicBool::new(false)),
