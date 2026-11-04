@@ -59,17 +59,27 @@ pub struct Seen {
     pub latest: BTreeMap<String, i64>,
 }
 
+/// How long before a session was first seen a push still counts in that first thread: a look sees a new session
+/// within a minute, so a page pushed straight after its agent woke is its first thread's.
+pub const FIRST_SEEN_GRACE: i64 = 120;
+
 impl Seen {
+    /// Whether this node has seen this session (its own agents' only).
+    pub fn knows(&self, session: &str) -> bool {
+        self.history.get(session).is_some_and(|h| !h.is_empty()) || self.latest.get(session).is_some_and(|t| *t > 0)
+    }
+
     /// The thread this session's agent was running in when it pushed (`at`, Spacesheep's `created_at`): the last one
-    /// seen from then or before; the first seen, for a push before it was seen (or with no time); its last known
-    /// thread, for a session with no history.
+    /// seen from then or before, or the first seen for a push up to FIRST_SEEN_GRACE before it (or with no time).
+    /// None for an earlier push: where it ran then wasn't seen, so nothing is pinned (shipwright's review). A session
+    /// with no history (seen before 0.8.2 kept it, and not running since) has its last known thread.
     pub fn thread_at(&self, session: &str, at: &str) -> Option<i64> {
         let thread = match self.history.get(session).filter(|h| !h.is_empty()) {
-            Some(h) => {
-                let at = secs(at);
-                let before = at.and_then(|at| h.iter().rev().find(|(since, _)| *since <= at));
-                before.unwrap_or(&h[0]).1
-            }
+            Some(h) => match secs(at) {
+                Some(at) if at < h[0].0 - FIRST_SEEN_GRACE => return None,
+                Some(at) => h.iter().rev().find(|(since, _)| *since <= at).unwrap_or(&h[0]).1,
+                None => h[0].1,
+            },
             None => *self.latest.get(session)?,
         };
         Some(thread).filter(|t| *t > 0)
@@ -169,13 +179,15 @@ impl Known {
     }
 
     /// Each page without its thread yet gets the thread the first session here that pushed it was running in when
-    /// it did ([`Seen::thread_at`]). The pages that got one, with it. A page whose sessions' order isn't known gets
-    /// none: its messages go to its agent's latest thread, as before 0.8.2.
+    /// it did ([`Seen::thread_at`]), and none if that isn't known: a later session's thread isn't the page's. The
+    /// pages that got one, with it. A page that gets none, or whose sessions' order isn't known, has its messages go
+    /// to its agent's latest thread, as before 0.8.2.
     pub fn settle(&mut self, seen: &Seen) -> Vec<(String, i64)> {
         let mut settled = Vec::new();
         for (id, p) in self.0.iter_mut().filter(|(_, p)| p.thread == 0 && p.ordered) {
             let at = |s: &str| p.pushed.get(s).map(String::as_str).unwrap_or("");
-            if let Some(t) = p.sessions.iter().find_map(|s| seen.thread_at(s, at(s))) {
+            let first = p.sessions.iter().find(|s| seen.knows(s));
+            if let Some(t) = first.and_then(|s| seen.thread_at(s, at(s))) {
                 p.thread = t;
                 settled.push((id.clone(), t));
             }
@@ -299,11 +311,17 @@ mod tests {
         };
         assert_eq!(seen.thread_at("s-1", "2026-11-04T08:05:08.589Z"), Some(19090), "where it was then");
         assert_eq!(seen.thread_at("s-1", "2026-11-04T09:23:38Z"), Some(25460));
-        assert_eq!(seen.thread_at("s-1", "2026-11-04T07:57:40Z"), Some(19090), "before it was seen: the first seen");
+        assert_eq!(
+            seen.thread_at("s-1", "2026-11-04T07:58:30Z"),
+            Some(19090),
+            "just before it was seen: the first seen"
+        );
+        assert_eq!(seen.thread_at("s-1", "2026-11-04T07:50:00Z"), None, "long before it was seen: not known");
         assert_eq!(seen.thread_at("s-1", ""), Some(19090), "no time: the first seen");
         assert_eq!(seen.thread_at("old", "2026-11-04T08:05:08Z"), Some(4159), "no history: its last known");
         assert_eq!(seen.thread_at("none", ""), None);
         assert_eq!(seen.thread_at("elsewhere", ""), None);
+        assert!(seen.knows("s-1") && seen.knows("old") && !seen.knows("none") && !seen.knows("elsewhere"));
     }
 
     #[test]
@@ -322,6 +340,11 @@ mod tests {
         let moved = vec![(90, 19090), (200, 25460)];
         let settled = known.settle(&seen(vec![("s-1", moved), ("s-2", vec![(290, 25460)])]));
         assert_eq!(settled, [("p1".to_string(), 19090)], "where s-1 ran when it pushed, not where it is now");
+        // a page pushed long before its first session was seen: not pinned, even though a later session's thread is
+        let p2 = Space { id: "p2".into(), updated_at: "t1".into() };
+        known.read(&p2, vec![pushed("s-1", 10), pushed("s-2", 300)]);
+        assert_eq!(known.settle(&seen(vec![("s-1", vec![(1000, 19090)]), ("s-2", vec![(290, 25460)])])), []);
+        known.0.remove("p2");
         // its agent works in another thread now, and pushes the page again from there: it stays in its own
         known.read(&Space { id: "p1".into(), updated_at: "t2".into() }, vec![pushed("s-1", 100), pushed("s-3", 400)]);
         assert_eq!(known.settle(&seen(vec![("s-1", vec![(200, 25460)]), ("s-3", vec![(390, 25460)])])), []);
