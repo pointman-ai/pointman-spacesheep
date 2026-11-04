@@ -97,6 +97,14 @@ pub fn link(raw: &str) -> Option<String> {
     Some(comment.unwrap_or(page).to_string()).filter(|u| u.len() <= 2048)
 }
 
+/// The page a message was written on, by its id: Spacesheep's `space_uuid`, else the end of its `space_url`.
+pub fn page(raw: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(raw).ok()?;
+    let from_url = || v["space_url"].as_str()?.split(['?', '#']).next()?.rsplit_once("/space/").map(|(_, id)| id);
+    let id = v["space_uuid"].as_str().or_else(from_url).map(str::trim)?;
+    Some(id.to_string()).filter(|id| !id.is_empty() && !id.contains('/'))
+}
+
 /// The message's id (`id`, a whole number above 0), which `talk reply --to` takes to answer that message.
 pub fn message_id(raw: &str) -> Option<i64> {
     let v: Value = serde_json::from_str(raw).ok()?;
@@ -168,6 +176,9 @@ mod tests {
         let comment = "https://spacesheep.dev/space/4012a3ee-1a54-4246-a3e5-bcf54ed45df5?comment=14ceef29-5909-479a-94bd-105456dcee63";
         assert_eq!(link(raw).as_deref(), Some(comment));
         // from the Session tab, no comment: the page itself; no https page, no link
+        assert_eq!(page(FIRST_REAL).as_deref(), Some("4012a3ee-1a54-4246-a3e5-bcf54ed45df5"));
+        assert_eq!(page(r#"{"space_url": "https://spacesheep.dev/space/ab12?comment=c"}"#).as_deref(), Some("ab12"));
+        assert_eq!(page(r#"{"message": "x"}"#), None);
         let session = r#"{"id": 3, "space_url": "https://spacesheep.dev/space/4012a3ee", "message": "hi @scene"}"#;
         assert_eq!(link(session).as_deref(), Some("https://spacesheep.dev/space/4012a3ee"));
         assert_eq!(link(r#"{"id": 4, "space_url": "http://example.com", "message": "x"}"#), None);

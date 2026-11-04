@@ -272,6 +272,30 @@ fn messages_go_to_the_thread_of_the_agents_latest_run() {
 }
 
 #[test]
+fn a_pages_messages_stay_in_the_thread_it_was_published_from() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    let settled = "page page-s-1's messages go to thread 41, where it was published";
+    assert!(wait(WITHIN * 2, || node.log().contains(settled)), "{}", node.log());
+
+    // scene goes on to work in thread 52, in the same session: its page's messages stay in 41
+    board.set_agents(vec![agent("scene", "s-1", 52)]);
+    std::thread::sleep(Duration::from_millis(2500)); // a look or two
+    let on_page = json!({"message": "is this still right?", "space_uuid": "page-s-1", "id": 7});
+    fake.push("s-1", &format!("{on_page}\n"));
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    assert_eq!(got[0]["thread_id"], 41, "the page's own thread: {}", node.log());
+
+    // a message whose page isn't known goes to scene's latest thread, as before
+    fake.push("s-1", &format!("{MESSAGE}\n"));
+    let got = board.wait_posts(WITHIN, |p| p.len() == 2);
+    assert_eq!(got.len(), 2, "{}", node.log());
+    assert_eq!(got[1]["thread_id"], 52);
+}
+
+#[test]
 fn a_finished_agents_page_reaches_only_the_agents_it_calls() {
     let board = Board::with(vec![agent("docrules", "s-d", 41), agent("editor", "s-e", 50)]);
     let fake = Fake::new();

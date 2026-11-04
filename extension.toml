@@ -5,15 +5,15 @@
 # Talk (Pointman thread 6914; the spec: https://spacesheep.dev/@james/spacesheep-talk-through-the-pointman-node): a
 # page's Session tab on spacesheep.dev messages the agent session that published it. While the account's Talk switch
 # is on, the process runs `spacesheep talk listen --session <id>` for each agent here whose session published a page,
-# and posts each message in the agent's thread, which wakes it: or wakes the agents the message starts by calling
-# (`@editor …`), James's call in thread 6914 [16235]. The agent answers there, and on the page with
-# `spacesheep talk reply`. The node names no extension: its `agents.sessions` and `board.post` are generic. Nothing
+# and posts each message in the page's thread (the one it was published from), which wakes the agent: or wakes the
+# agents the message starts by calling (`@editor …`), James's call in thread 6914 [16235]. The agent answers there,
+# and on the page with `spacesheep talk reply`. The node names no extension: its `agents.sessions` and `board.post` are generic. Nothing
 # changes on Spacesheep's side, and nothing goes into ~/.claude.
 
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.8.1"
+version = "0.8.2"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
 node = ">=0.4,<1"

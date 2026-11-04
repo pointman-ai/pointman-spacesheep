@@ -6,9 +6,9 @@
 //! or as soon as either changes. A look, while the account's Talk is on: the node's `agents.sessions`, then a
 //! listener for each agent whose session published a page, with a thread, and none for the rest. A listener is a
 //! thread running `spacesheep talk listen --session <id>`, started again with a growing wait whenever it ends. Each
-//! message goes out as a `board.post` in the publisher's thread, for the agents it starts by calling or else the
-//! publisher, in order, from a thread of their own. The listeners' process groups are kept in the state folder, so
-//! a restart stops any left behind.
+//! message goes out as a `board.post` in the page's own thread (the one it was published from; else the publisher's
+//! latest), for the agents it starts by calling or else the publisher, in order, from a thread of their own. The
+//! listeners' process groups are kept in the state folder, so a restart stops any left behind.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
@@ -273,6 +273,8 @@ struct Status {
     /// The sessions that published a page, the most recently changed page's first, as last read; when, and what
     /// went wrong reading them.
     publishers: Vec<String>,
+    /// Each page's own thread, where its messages go, by the page's id: the thread it was published from (EXT-128).
+    page_threads: BTreeMap<String, i64>,
     pages_at: Option<f64>,
     pages_problem: Option<String>,
     account: Account,
@@ -503,11 +505,14 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         return;
     }
     let who = to.iter().map(|t| format!("@{t}")).collect::<Vec<_>>().join(" ");
+    // the page's own thread, the one it was published from; else, for a page not read yet, its agent's latest
+    let own = said::page(raw).and_then(|p| lock(status).page_threads.get(&p).copied());
+    let thread = own.unwrap_or(agent.thread);
     h.log(format!(
-        "a message on {} for {who} ({} characters): posting it in thread {}",
+        "a message on {} for {who} ({} characters): posting it in thread {thread}{}",
         page_of(agent),
         text.chars().count(),
-        agent.thread
+        if own.is_some() { ", the page's" } else { "" }
     ));
     lock(status).last = Some((now(), who.clone()));
     let post = words::post(&to, text);
@@ -520,7 +525,7 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         said::redelivered(raw),
         pin,
     );
-    let _ = posts.send(Post { thread: agent.thread, to: who, text: post, link: said::link(raw), context });
+    let _ = posts.send(Post { thread, to: who, text: post, link: said::link(raw), context });
 }
 
 /// Posts go out one at a time, in order, each tried POST_TRIES times.
@@ -695,7 +700,7 @@ impl Talk {
             }
             match agent.gone {
                 false => self.h.log(format!(
-                    "listening for @{} (session {}), posting in thread {}",
+                    "listening for @{} (session {}), its latest thread {}",
                     agent.handle, agent.session, agent.thread
                 )),
                 true => self.h.log(format!("listening on {} (session {})", page_of(&agent), agent.session)),
@@ -764,6 +769,9 @@ impl Talk {
             cli.clone(),
             self.state.join("pages.json"),
         );
+        // each session here, its agent's run's thread: a new page's own thread is its first session's
+        let threads: BTreeMap<String, i64> =
+            self.remembered.iter().map(|(s, (_, thread, _))| (s.clone(), *thread)).collect();
         std::thread::spawn(move || {
             let due = lock(&status).helped_at.is_none_or(|at| now() - at >= scaled(HELP_EVERY).as_secs_f64());
             if due {
@@ -778,14 +786,15 @@ impl Talk {
                     st.answers_named = named;
                 }
             }
-            let got = publishers(&h, &cli, &file);
+            let got = publishers(&h, &cli, &file, &threads);
             let mut st = lock(&status);
             match got {
-                Ok(who) => {
+                Ok((who, page_threads)) => {
                     if who != st.publishers {
                         look_now.store(true, Ordering::SeqCst);
                     }
                     st.publishers = who;
+                    st.page_threads = page_threads;
                     st.pages_at = Some(now());
                     st.pages_problem = None;
                 }
@@ -825,8 +834,14 @@ impl Talk {
     }
 }
 
-/// Who published the account's latest pages (`list --json`), each page's versions read only when it has changed.
-fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<Vec<String>, String> {
+/// Who published the account's latest pages (`list --json`), each page's versions read only when it has changed; and
+/// each page's own thread, where it's known (`threads`: each session here, its agent's run's thread).
+fn publishers(
+    h: &Handle,
+    cli: &Cli,
+    file: &std::path::Path,
+    threads: &BTreeMap<String, i64>,
+) -> Result<(Vec<String>, BTreeMap<String, i64>), String> {
     let ran = cli::run(cli, &["list", "--json"], PAGES_TIMEOUT).map_err(|e| e.to_string())?;
     let list = match ran.code {
         Some(0) => pages::spaces(&ran.stdout)
@@ -839,9 +854,7 @@ fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<Vec<Strin
     for space in stale {
         let ran = cli::run(cli, &["versions", &space.id, "--json"], PAGES_TIMEOUT);
         match ran.as_ref().ok().filter(|r| r.code == Some(0)).and_then(|r| pages::sessions(&r.stdout)) {
-            Some(who) => {
-                known.0.insert(space.id.clone(), (space.updated_at.clone(), who));
-            }
+            Some(who) => known.read(space, who),
             None => h.log(format!(
                 "couldn't read who published page {}: {}",
                 space.id,
@@ -852,8 +865,11 @@ fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path) -> Result<Vec<Strin
             )),
         }
     }
+    for (page, thread) in known.settle(threads) {
+        h.log(format!("page {page}'s messages go to thread {thread}, where it was published"));
+    }
     let _ = std::fs::write(file, known.to_json());
-    Ok(known.publishers())
+    Ok((known.publishers(), known.threads()))
 }
 
 /// The account's switch as the log says it.
