@@ -248,6 +248,41 @@ fn npx_runs_the_cli_when_the_machine_has_no_spacesheep() {
 }
 
 #[test]
+fn npxs_copy_runs_with_node_so_no_npm_exec_stays_under_each_listener() {
+    let (fake, board) = (Fake::npx_with_copy(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    fake.prints("s-1", &format!("{MESSAGE}\n"));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    assert_eq!(board.wait_posts(WITHIN, |p| !p.is_empty()).len(), 1, "{}", node.log());
+    let calls = fake.calls();
+    assert_eq!(calls[0], "-y -p spacesheep@latest -c command -v spacesheep", "npx is asked first: {calls:?}");
+    assert!(calls.contains(&"talk listen --session s-1".to_string()), "{calls:?}");
+    assert!(calls.contains(&"talk status".to_string()), "{calls:?}");
+    assert!(calls.contains(&"list --json".to_string()), "{calls:?}");
+    assert!(!calls[1..].iter().any(|c| c.starts_with("-y ")), "nothing else through npx: {calls:?}");
+    let copy = fake.dir.path().join(".bin/spacesheep");
+    let line = format!(
+        "running npx's spacesheep@latest at {}, run with {}",
+        copy.display(),
+        fake.dir.path().join("node").display()
+    );
+    assert!(node.log().contains(&line), "{}", node.log());
+
+    // npm's cache cleaned: npx is asked again, and can't say, so the listener starts again through npx
+    fake.copy_gone();
+    std::thread::sleep(Duration::from_millis(1500)); // a tick
+    let pid = fake.pids("s-1")[0];
+    // SAFETY: the fake listener's own pid, from its pids file
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let again = "-y spacesheep@latest talk listen --session s-1".to_string();
+    assert!(wait(WITHIN, || fake.calls().contains(&again)), "{:?}\n{}", fake.calls(), node.log());
+    let asks = fake.calls().iter().filter(|c| c.starts_with("-y -p ")).count();
+    assert_eq!(asks, 2, "asked once more when the copy went: {:?}", fake.calls());
+    assert!(node.log().contains("npx didn't say where its spacesheep@latest is (npx exited 1: npm error could not determine executable to run): running it through npx"), "{}", node.log());
+}
+
+#[test]
 fn messages_go_to_the_thread_of_the_agents_latest_run() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
     fake.published("s-1");
