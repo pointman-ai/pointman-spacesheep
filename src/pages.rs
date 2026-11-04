@@ -148,12 +148,13 @@ impl Known {
         self.0.iter().filter(|(_, p)| p.thread > 0).map(|(id, p)| (id.clone(), p.thread)).collect()
     }
 
-    /// Every session that published one of these pages, the most recently changed page's first, each once.
+    /// Every session that published one of these pages, the most recently changed page's first, and in each page the
+    /// latest version's first (the session its Session tab talks to), each once.
     pub fn publishers(&self) -> Vec<String> {
         let mut pages: Vec<&Page> = self.0.values().collect();
         pages.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         let mut out: Vec<String> = Vec::new();
-        for s in pages.into_iter().flat_map(|p| &p.sessions) {
+        for s in pages.into_iter().flat_map(|p| p.sessions.iter().rev()) {
             if !out.contains(s) {
                 out.push(s.clone());
             }
@@ -207,7 +208,7 @@ mod tests {
         assert_eq!(again, known);
         assert_eq!(again.publishers(), ["s-1"]);
         known.read(&Space { id: "p2".into(), updated_at: "t9".into() }, vec!["s-2".into(), "s-1".into()]);
-        assert_eq!(known.publishers(), ["s-1", "s-2"], "the newest page's sessions first, each once");
+        assert_eq!(known.publishers(), ["s-1", "s-2"], "the newest page's sessions first, its latest first, each once");
     }
 
     #[test]
@@ -229,7 +230,7 @@ mod tests {
 
         // a page kept before 0.8.2: its sessions still count, its versions are read again, and only then it settles
         let old = Known::from_json(r#"{"p1": {"updated_at": "t1", "sessions": ["s-2", "s-1"]}}"#);
-        assert_eq!(old.publishers(), ["s-2", "s-1"]);
+        assert_eq!(old.publishers(), ["s-1", "s-2"]);
         assert!(old.stale(&p1), "read again for the order");
         let mut old = old;
         assert_eq!(old.settle(&threads(&[("s-1", 19090)])), [], "not in the versions' order");
