@@ -16,6 +16,23 @@ use crate::words::now;
 /// The vault item `/spacesheep add` seals (extension.toml's `[[credentials]]`).
 pub const ITEM: &str = "spacesheep.key";
 
+/// The Spacesheep key in what the vault gave: `ss_` and 16 to 200 letters and digits (the credential form's own
+/// pattern), not inside a longer word. The node hands over the vault's whole record as it is,
+/// `{"kind":"env","vars":{"spacesheep.key":"ss_…"}}`, not the bare key; a pasted `SPACESHEEP_KEY=` line or quotes
+/// around it are fine too. None when there's no such key in it, so nothing else ever reaches the CLI.
+pub fn key_in(value: &str) -> Option<&str> {
+    let b = value.as_bytes();
+    let mut from = 0;
+    while let Some(at) = value[from..].find("ss_").map(|i| i + from) {
+        let len = b[at + 3..].iter().take_while(|c| c.is_ascii_alphanumeric()).count();
+        if (at == 0 || !b[at - 1].is_ascii_alphanumeric()) && (16..=200).contains(&len) {
+            return Some(&value[at..at + 3 + len]);
+        }
+        from = at + 3;
+    }
+    None
+}
+
 /// A key's fingerprint, so a key changed in the vault is tried at once and a refused one isn't tried again and again.
 /// Never the key, and never logged.
 pub fn fingerprint(key: &str) -> u64 {
@@ -192,6 +209,19 @@ mod tests {
         assert_eq!(key_name("mac-m4"), "mac-m4");
         assert_eq!(key_name("  "), "Pointman node");
         assert_eq!(key_name(&"x".repeat(80)).len(), 60);
+    }
+
+    #[test]
+    fn the_key_is_taken_out_of_the_vaults_record() {
+        let key = "ss_0123456789abcdef0123456789abcdef";
+        let record = format!(r#"{{"kind":"env","vars":{{"spacesheep.key":"{key}"}}}}"#);
+        assert_eq!(key_in(&record), Some(key), "the node's record, as it hands it over");
+        assert_eq!(key_in(key), Some(key));
+        assert_eq!(key_in(&format!("  SPACESHEEP_KEY=\"{key}\"\n")), Some(key));
+        assert_eq!(key_in(r#"{"kind":"env","vars":{"spacesheep.key":"Bearer xyz"}}"#), None);
+        assert_eq!(key_in("ss_short"), None, "fewer than 16 after ss_");
+        assert_eq!(key_in("pass_0123456789abcdef0123"), None, "not inside a longer word");
+        assert_eq!(key_in(""), None);
     }
 
     #[test]

@@ -10,12 +10,38 @@ use serde_json::json;
 
 const VAULT_KEY: &str = "ss_0123456789abcdef0123456789abcdef";
 
+/// What the node hands an extension for a vault item: the vault's whole record, not the bare key.
+fn record(key: &str) -> String {
+    format!(r#"{{"kind":"env","vars":{{"spacesheep.key":"{key}"}}}}"#)
+}
+
+#[test]
+fn a_vault_record_with_no_ss_key_is_said_and_never_reaches_the_cli() {
+    let fake = Fake::new();
+    fake.signed_out();
+    let board = Board::default();
+    let node =
+        spacesheep(&fake, &board, on()).secret("spacesheep.key", record("Bearer 0123456789abcdef")).start().unwrap();
+    let mut health = json!(null);
+    assert!(
+        wait(WITHIN, || {
+            health = node.call("health.check", json!({})).unwrap();
+            part(&health, "account")["why"].as_str().is_some_and(|w| w.contains("holds no key starting with `ss_`"))
+        }),
+        "{health}"
+    );
+    assert_eq!(part(&health, "account")["state"], "STATE_FAILING", "{health}");
+    assert!(fake.calls().iter().all(|c| !c.contains("keys ")), "{:?}", fake.calls());
+    assert_eq!(fake.parent_key(), None);
+}
+
 #[test]
 fn a_signed_out_machine_signs_itself_in_with_the_vaults_key() {
     let fake = Fake::new();
     fake.signed_out();
     let board = Board::default();
-    let node = spacesheep(&fake, &board, on()).machine("mac-m4").secret("spacesheep.key", VAULT_KEY).start().unwrap();
+    let node =
+        spacesheep(&fake, &board, on()).machine("mac-m4").secret("spacesheep.key", record(VAULT_KEY)).start().unwrap();
 
     assert!(wait(WITHIN, || fake.saved_key().is_some()), "kept a key: {:?}", fake.calls());
     assert_eq!(fake.parent_key().as_deref(), Some(VAULT_KEY), "minted with the vault's key, in SPACESHEEP_KEY");
@@ -46,7 +72,7 @@ fn a_signed_out_machine_signs_itself_in_with_the_vaults_key() {
 fn a_signed_in_machine_never_touches_the_vaults_key() {
     let fake = Fake::new();
     let board = Board::default();
-    let node = spacesheep(&fake, &board, on()).secret("spacesheep.key", VAULT_KEY).start().unwrap();
+    let node = spacesheep(&fake, &board, on()).secret("spacesheep.key", record(VAULT_KEY)).start().unwrap();
     assert!(wait(WITHIN, || {
         let health = node.call("health.check", json!({})).unwrap();
         part(&health, "account")["state"] == "STATE_OK"
@@ -88,7 +114,7 @@ fn a_minted_key_that_isnt_kept_is_saved_at_the_next_try_and_no_other_is_minted()
     let node = spacesheep(&fake, &board, on())
         .env("POINTMAN_SPACESHEEP_FASTER", "600")
         .machine("mac-m4")
-        .secret("spacesheep.key", VAULT_KEY)
+        .secret("spacesheep.key", record(VAULT_KEY))
         .start()
         .unwrap();
     let mut health = json!(null);
@@ -124,7 +150,7 @@ fn a_refused_key_is_said_and_not_tried_again_and_again() {
     fake.signed_out();
     fake.refuses();
     let board = Board::default();
-    let node = spacesheep(&fake, &board, on()).secret("spacesheep.key", VAULT_KEY).start().unwrap();
+    let node = spacesheep(&fake, &board, on()).secret("spacesheep.key", record(VAULT_KEY)).start().unwrap();
     let mut health = json!(null);
     assert!(
         wait(WITHIN, || {

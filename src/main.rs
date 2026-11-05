@@ -302,11 +302,15 @@ struct Tried {
 /// at once; with the one that failed, again after SIGN_IN_AGAIN. None when it isn't due, so health keeps what the
 /// last try said. Only the key's fingerprint is kept, and the log names the vault item, never the key.
 fn from_vault(h: &Handle, cli: &Cli, tried: &Mutex<Tried>) -> Option<Vault> {
-    let key = match h.secret(signin::ITEM) {
-        Ok(key) => key,
+    let value = match h.secret(signin::ITEM) {
+        Ok(value) => value,
         Err(e) => return Some(Vault::Missing(format!("{e:#}"))),
     };
-    let print = signin::fingerprint(&key);
+    // the vault's whole record, not the bare key: only the ss_ key in it ever reaches the CLI
+    let Some(key) = signin::key_in(&value) else {
+        return Some(Vault::Failed(format!("the vault's {} holds no key starting with `ss_`", signin::ITEM)));
+    };
+    let print = signin::fingerprint(key);
     let mut unsaved = {
         let mut t = lock(tried);
         if t.last.is_some_and(|(p, at)| p == print && at.elapsed() < scaled(SIGN_IN_AGAIN)) {
@@ -325,7 +329,7 @@ fn from_vault(h: &Handle, cli: &Cli, tried: &Mutex<Tried>) -> Option<Vault> {
         ));
     }
     let name = signin::key_name(&h.machine());
-    let signed = signin::sign_in(cli, &key, &name, &mut unsaved, STATUS_TIMEOUT);
+    let signed = signin::sign_in(cli, key, &name, &mut unsaved, STATUS_TIMEOUT);
     let kept = unsaved.as_ref().map(|u| (u.name.clone(), u.at));
     lock(tried).unsaved = unsaved;
     match (signed, kept) {
