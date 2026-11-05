@@ -54,7 +54,7 @@ needed = 0                       # a machine signed in by hand needs none; healt
 [[commands]]
 kind = "spacesheep.add"
 title = "Add a Spacesheep API key"
-params = { type = "object", properties = {} }
+params = { type = "object", properties = {}, additionalProperties = false }
 slash = "add"
 form = "key"
 summary = "Add a Spacesheep API key: each node that isn't signed in signs itself in with a key of its own"

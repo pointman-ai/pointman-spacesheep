@@ -49,4 +49,5 @@ fn the_manifest_keeps_to_cores_limits() {
     assert_eq!(add["slash"].as_str(), Some("add"));
     assert_eq!(add["form"].as_str(), key["id"].as_str(), "it opens the key's form");
     assert!(add["params"]["properties"].as_table().unwrap().is_empty(), "no name: only spacesheep.key is opened");
+    assert_eq!(add["params"]["additionalProperties"].as_bool(), Some(false), "nor a name passed through");
 }
