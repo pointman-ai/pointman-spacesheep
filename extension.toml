@@ -17,7 +17,7 @@
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.9.3"
+version = "0.9.4"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
 node = ">=0.4,<1"
