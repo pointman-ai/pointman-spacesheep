@@ -152,6 +152,21 @@ fn only_agents_whose_session_published_a_page_are_listened_for() {
 }
 
 #[test]
+fn a_page_published_through_the_new_api_is_listened_for() {
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.published_new_api("s-1");
+    fake.prints("s-1", &format!("{MESSAGE}\n"));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
+    assert_eq!(got[0]["thread_id"], 41);
+    assert!(got[0]["text"].as_str().unwrap().starts_with("@scene\n\n"), "{}", got[0]["text"]);
+    assert_eq!(fake.listens("s-1"), 1, "{:?}", fake.calls());
+}
+
+#[test]
 fn a_listener_that_ends_is_started_again() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
     fake.published("s-1");

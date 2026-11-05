@@ -191,6 +191,22 @@ impl Fake {
         std::fs::rename(tmp, file).unwrap();
     }
 
+    /// The account's one page, as Spacesheep's new API answers: `list` is `{spaces, page}`, and the versions are newest
+    /// first with no number, naming the session in `client`, after a newer version another account pushed.
+    pub fn published_new_api(&self, session: &str) {
+        let id = format!("page-{session}");
+        let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
+        let versions = json!({"versions": [
+            {"id": "c2", "created_at": at, "client": {"transport": "mcp", "other": "agent"}},
+            {"id": "c1", "created_at": at, "client": {"name": "claude-code", "session_id": session}}],
+            "page": {"next": ""}});
+        std::fs::write(self.file(&format!("versions.{id}.json")), versions.to_string()).unwrap();
+        let spaces = json!({"spaces": [{"id": id, "name": "@james/a-page", "updated_at": at}], "page": {"next": ""}});
+        let tmp = self.file("spaces.json.tmp");
+        std::fs::write(&tmp, spaces.to_string()).unwrap();
+        std::fs::rename(tmp, self.file("spaces.json")).unwrap();
+    }
+
     /// Only these sessions' pages in `list`, as when newer pages have pushed the others out of the account's latest.
     pub fn listed_only(&self, sessions: &[&str]) {
         let file = self.file("spaces.json");
