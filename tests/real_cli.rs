@@ -29,10 +29,10 @@ fn the_real_cli_on_a_machine_not_signed_in_says_so_in_health() {
     assert!(signed_out, "{health}\n{}", node.log());
     let account = part(&health, "account");
     assert_eq!(account["state"], "STATE_FAILING", "{health}");
-    assert!(
-        account["why"].as_str().unwrap().starts_with("this machine isn't signed in to Spacesheep: not signed in"),
-        "{health}"
-    );
+    let why = account["why"].as_str().unwrap();
+    assert!(why.starts_with("this machine isn't signed in to Spacesheep (not signed in"), "{health}");
+    // no key in the vault: what signs every node in
+    assert!(why.contains("run `/spacesheep add` once"), "{health}");
     // nothing is listened for on a machine that can't sign in
     let listeners = part(&health, "listeners");
     assert_eq!(listeners["state"], "STATE_STOPPED", "{health}");

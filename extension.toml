@@ -1,6 +1,10 @@
 # Spacesheep: a behaviour, and Talk through the node. Its CLI is how Spacesheep prefers to be installed, so agents
-# publish with `npx -y spacesheep@latest`, signed in once per machine (~/.config/spacesheep), not through an MCP
-# server. Installed on a node, the behaviour goes into every run there, with its rules in each run's allowed tools.
+# publish with `npx -y spacesheep@latest`, not through an MCP server. Installed on a node, the behaviour goes into
+# every run there, with its rules in each run's allowed tools.
+#
+# Signing in (EXT-132): the CLI keeps one key per machine (~/.config/spacesheep). `/spacesheep add` seals one API key
+# in the vault, and each node that isn't signed in mints a key of its own with it (`keys create`, then `keys save`),
+# so one add signs in every node. A machine signed in by hand keeps its own key.
 #
 # Talk (Pointman thread 6914; the spec: https://spacesheep.dev/@james/spacesheep-talk-through-the-pointman-node): a
 # page's Session tab on spacesheep.dev messages the agent session that published it. While the account's Talk switch
@@ -13,7 +17,7 @@
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.8.3"
+version = "0.9.0"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
 node = ">=0.4,<1"
@@ -34,6 +38,16 @@ rules = ["Bash(spacesheep:*)", "Bash(npx -y spacesheep@latest:*)"]
 network = true                   # spacesheep.dev, through its CLI
 agents = true                    # agents.sessions: each agent's session and latest thread
 post = true                      # board.post: each message, as a post in the agent's thread
+secrets = ["spacesheep.key"]     # the API key that signs each node in (EXT-132); only ever in the CLI's environment
+
+[[credentials]]
+id = "key"
+title = "Spacesheep API key"
+help = "On spacesheep.dev: Settings › API keys › Create (ss_…). Each node that isn't signed in uses it to make a key of its own, named after the machine."
+item = "spacesheep.key"
+value = "ss_[A-Za-z0-9]{16,200}"
+placeholder = "ss_…"
+needed = 0                       # a machine signed in by hand needs none; health's account part asks when one isn't
 
 [[events]]
 name = "spacesheep.talk"

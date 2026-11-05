@@ -1,7 +1,8 @@
 //! What the tests share: the extension under the SDK's stand-in node, which answers `agents.sessions` from a
 //! state the test sets and keeps each `board.post`, with a fake `spacesheep` (a shell script that logs each call
 //! beside itself, prints what the test put there for each run of `talk listen`, then listens until it's stopped,
-//! printing whatever the test pushes; and answers `talk status`, `list` and `versions` from files the test writes).
+//! printing whatever the test pushes; and answers `talk status`, `list` and `versions` from files the test writes,
+//! and `keys create` and `keys save` as a signed-out machine signing itself in).
 //! No test reaches spacesheep.dev or the board.
 #![allow(dead_code)]
 
@@ -58,7 +59,17 @@ case "$1 $2" in
   "--help "*)
     if [ -f "$here/help" ]; then cat "$here/help"; else echo '    spacesheep talk reply <text> [--session ID]'; fi;;
   "talk status")
+    if [ -f "$here/signed-out" ] && [ ! -f "$here/saved" ]; then
+      printf '\n  ✗ not signed in — run `spacesheep login`\n\n' >&2; exit 3
+    fi
     if [ -f "$here/status" ]; then cat "$here/status"; else printf '{\n  "pro": true,\n  "enabled": true,\n  "this_machine": false\n}\n'; fi;;
+  "keys create")
+    printf '%s' "$SPACESHEEP_KEY" > "$here/parent"
+    if [ -z "$SPACESHEEP_KEY" ]; then printf '\n  ✗ not signed in\n\n' >&2; exit 3; fi
+    if [ -f "$here/refuse" ]; then printf '\n  ✗ the server rejected that key\n\n' >&2; exit 1; fi
+    printf '{"key": "ss_minted%s", "name": "%s", "scope": "full"}\n' "$$" "$4";;
+  "keys save")
+    cat > "$here/saved";;
   "list --json")
     if [ -f "$here/spaces.json" ]; then cat "$here/spaces.json"; else echo '[]'; fi;;
   "versions "*)
@@ -185,6 +196,26 @@ impl Fake {
         let tmp = self.file("spaces.json.tmp");
         std::fs::write(&tmp, Value::Array(spaces.into_iter().filter(keep).collect()).to_string()).unwrap();
         std::fs::rename(tmp, file).unwrap();
+    }
+
+    /// A machine that isn't signed in: `talk status` exits 3, as the CLI's does, until `keys save` has kept a key.
+    pub fn signed_out(&self) {
+        std::fs::write(self.file("signed-out"), "").unwrap();
+    }
+
+    /// Spacesheep refuses the key `keys create` mints with.
+    pub fn refuses(&self) {
+        std::fs::write(self.file("refuse"), "").unwrap();
+    }
+
+    /// The key `keys create` had in its environment (SPACESHEEP_KEY), when it ran.
+    pub fn parent_key(&self) -> Option<String> {
+        std::fs::read_to_string(self.file("parent")).ok()
+    }
+
+    /// What `keys save` read on its stdin, when it ran.
+    pub fn saved_key(&self) -> Option<String> {
+        std::fs::read_to_string(self.file("saved")).ok()
     }
 
     /// A CLI whose `talk reply` takes `--to`, the message it answers, as its help says.

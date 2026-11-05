@@ -1,7 +1,8 @@
 //! The extension's process: the node starts it as extension.toml's `[run]` says (`bin/spacesheep`) and talks to
 //! it over stdin and stdout (the SDK handles that). Log with `h.log(…)`: stdout is the node's.
 //!
-//! Every second on the `talk` lane: the account's Talk switch is read every minute (`talk status`), the pages and
+//! Every second on the `talk` lane: the account's Talk switch is read every minute (`talk status`; a machine that
+//! isn't signed in signs itself in with the vault's `spacesheep.key` first, signin.rs), the pages and
 //! who published them every five while it's on (`list` and `versions`, pages.rs), and a look is due every minute
 //! or as soon as either changes. A look, while the account's Talk is on: the node's `agents.sessions`, then a
 //! listener for each agent whose session published a page, with a thread, and none for the rest. A listener is a
@@ -30,6 +31,7 @@ use serde_json::{json, Value};
 use spacesheep::cli::{self, Cli, Via};
 use spacesheep::pages::{self, Known, Seen};
 use spacesheep::said::{self, Reader, Said};
+use spacesheep::signin;
 use spacesheep::words::{self, clock, now};
 
 /// How often a look is checked for.
@@ -56,6 +58,9 @@ const HELP_EVERY: Duration = Duration::from_secs(3600);
 const AGAIN_FIRST: Duration = Duration::from_secs(5);
 const AGAIN_MAX: Duration = Duration::from_secs(300);
 const HEALTHY: Duration = Duration::from_secs(120);
+/// A machine that isn't signed in signs itself in with the vault's key (EXT-132): at once for a key it hasn't tried,
+/// and with one Spacesheep refused, or that failed for want of a network, again after this.
+const SIGN_IN_AGAIN: Duration = Duration::from_secs(1800);
 /// A post is tried this many times, this far apart.
 const POST_TRIES: u32 = 3;
 const POST_AGAIN: Duration = Duration::from_secs(10);
@@ -284,6 +289,52 @@ fn account(ran: &std::io::Result<cli::Ran>) -> Account {
     }
 }
 
+/// A machine that isn't signed in, signed in with the vault's key (`/spacesheep add`): with a key it hasn't tried,
+/// at once; with the one that failed, again after SIGN_IN_AGAIN. None when it isn't due, so health keeps what the
+/// last try said. Only the key's fingerprint is kept, and the log names the vault item, never the key.
+fn from_vault(h: &Handle, cli: &Cli, tried: &Mutex<Option<(u64, Instant)>>) -> Option<Vault> {
+    let key = match h.secret(signin::ITEM) {
+        Ok(key) => key,
+        Err(e) => return Some(Vault::Missing(format!("{e:#}"))),
+    };
+    let print = signin::fingerprint(&key);
+    {
+        let mut last = lock(tried);
+        if last.is_some_and(|(p, at)| p == print && at.elapsed() < scaled(SIGN_IN_AGAIN)) {
+            return None;
+        }
+        *last = Some((print, Instant::now()));
+    }
+    let name = signin::key_name(&h.machine());
+    match signin::sign_in(cli, &key, &name, STATUS_TIMEOUT) {
+        Ok(()) => {
+            h.log(format!(
+                "signed this machine in to Spacesheep with the vault's {}: its own key, \"{name}\"",
+                signin::ITEM
+            ));
+            Some(Vault::Signed(now()))
+        }
+        Err(why) => {
+            h.log(format!("signing this machine in with the vault's {}: {why}", signin::ITEM));
+            Some(Vault::Failed(why))
+        }
+    }
+}
+
+/// The vault's key, as the last sign-in from it went (EXT-132): health's words for a machine that isn't signed in.
+#[derive(Debug, Clone, Default, PartialEq)]
+enum Vault {
+    /// Not needed yet: the machine has been signed in whenever it was read.
+    #[default]
+    Unused,
+    /// The vault gave no `spacesheep.key`, in the node's words.
+    Missing(String),
+    /// Signing in with it failed, in the CLI's words.
+    Failed(String),
+    /// It signed this machine in, then.
+    Signed(f64),
+}
+
 /// One listener, as health and the event say.
 #[derive(Debug, Clone, Default)]
 struct Listening {
@@ -315,6 +366,7 @@ struct Status {
     pages_problem: Option<String>,
     account: Account,
     account_at: Option<f64>,
+    vault: Vault,
     /// The last message: when, and for whom.
     last: Option<(f64, String)>,
     /// The last post's problem, when it didn't go out.
@@ -634,6 +686,8 @@ struct Talk {
     history: History,
     checking: Arc<AtomicBool>,
     checked: Option<Instant>,
+    /// The vault key last tried for signing in (its fingerprint), and when.
+    tried: Arc<Mutex<Option<(u64, Instant)>>>,
     scanning: Arc<AtomicBool>,
     scanned: Option<Instant>,
     /// The account's switch or the publishers changed (on their own threads): look at the next tick.
@@ -832,7 +886,8 @@ impl Talk {
         }
     }
 
-    /// The account's Talk switch, read every minute on a thread of its own; a change means a look at once.
+    /// The account's Talk switch, read every minute on a thread of its own; a change means a look at once. A machine
+    /// that isn't signed in signs itself in with the vault's key first, when it's due (EXT-132).
     fn check_account(&mut self, cli: &Cli) {
         let recheck = std::mem::take(&mut lock(&self.status).recheck);
         let due = recheck || self.checked.is_none_or(|at| at.elapsed() >= scaled(STATUS_EVERY));
@@ -840,10 +895,25 @@ impl Talk {
             return;
         }
         self.checked = Some(Instant::now());
-        let (h, status, checking, look_now, cli) =
-            (self.h.clone(), self.status.clone(), self.checking.clone(), self.look_now.clone(), cli.clone());
+        let (h, status, checking, look_now, cli, tried) = (
+            self.h.clone(),
+            self.status.clone(),
+            self.checking.clone(),
+            self.look_now.clone(),
+            cli.clone(),
+            self.tried.clone(),
+        );
         std::thread::spawn(move || {
-            let got = account(&cli::run(&cli, &["talk", "status"], STATUS_TIMEOUT));
+            let mut got = account(&cli::run(&cli, &["talk", "status"], STATUS_TIMEOUT));
+            if matches!(got, Account::SignedOut(_)) {
+                if let Some(vault) = from_vault(&h, &cli, &tried) {
+                    let signed = matches!(vault, Vault::Signed(_));
+                    lock(&status).vault = vault;
+                    if signed {
+                        got = account(&cli::run(&cli, &["talk", "status"], STATUS_TIMEOUT));
+                    }
+                }
+            }
             if let Account::Failed(why) | Account::SignedOut(why) = &got {
                 h.log(format!("talk status: {why}"));
             }
@@ -990,6 +1060,38 @@ fn account_words(a: &Account) -> String {
     }
 }
 
+/// How to sign a machine in: once for every node, else on the machine itself.
+const ADD_KEY: &str = "run `/spacesheep add` once, with a key from https://spacesheep.dev/settings/api-keys, and each \
+                       node signs itself in with a key of its own within a minute (or sign this machine in yourself, \
+                       in a terminal on it: `npx -y spacesheep@latest login`)";
+
+/// Why a machine isn't signed in, and what signs it in (EXT-132).
+fn signed_out_words(said: &str, vault: &Vault) -> String {
+    let said = if said.is_empty() { String::new() } else { format!(" ({said})") };
+    match vault {
+        Vault::Unused => format!("this machine isn't signed in to Spacesheep{said}"),
+        Vault::Missing(_) => format!("this machine isn't signed in to Spacesheep{said}: {ADD_KEY}"),
+        Vault::Failed(why) => format!(
+            "this machine isn't signed in to Spacesheep{said}, and signing it in with the vault's {} failed: {why}. \
+             Add a working key with `/spacesheep add` (it's tried again within a minute)",
+            signin::ITEM
+        ),
+        Vault::Signed(at) => format!(
+            "this machine isn't signed in to Spacesheep{said}, though the vault's {} signed it in at {}",
+            signin::ITEM,
+            clock(*at)
+        ),
+    }
+}
+
+/// A machine the vault's key signed in says so.
+fn from_vault_words(vault: &Vault) -> String {
+    match vault {
+        Vault::Signed(at) => format!("; signed in with the vault's {} at {}", signin::ITEM, clock(*at)),
+        _ => String::new(),
+    }
+}
+
 /// The parts health shows: the account's switch, which is Talk's one switch, and the listeners.
 fn health(st: &Status) -> Vec<Part> {
     let part = |id: &str, kind: &str, name: &str, state: &str, needs: Vec<&str>, why: String| Part {
@@ -1011,16 +1113,9 @@ fn health(st: &Status) -> Vec<Part> {
     let when = st.account_at.map(|at| format!(" (checked at {})", clock(at))).unwrap_or_default();
     let (state, needs, why) = match &st.account {
         Account::Unknown => ("unknown", vec![], "not checked yet".to_string()),
-        Account::On => ("ok", vec![], format!("Talk is on for the account{when}")),
-        Account::Off(why) => ("stopped", vec![], format!("{why}{when}")),
-        Account::SignedOut(said) => (
-            "failing",
-            vec!["auth"],
-            format!(
-                "this machine isn't signed in to Spacesheep{}",
-                if said.is_empty() { String::new() } else { format!(": {said}") }
-            ),
-        ),
+        Account::On => ("ok", vec![], format!("Talk is on for the account{when}{}", from_vault_words(&st.vault))),
+        Account::Off(why) => ("stopped", vec![], format!("{why}{when}{}", from_vault_words(&st.vault))),
+        Account::SignedOut(said) => ("failing", vec!["auth"], signed_out_words(said, &st.vault)),
         Account::Failed(why) => ("failing", vec![], format!("{why}{when}")),
     };
     let account = part("account", "account", "Spacesheep account's Talk", state, needs, why);
@@ -1105,6 +1200,7 @@ fn main() -> anyhow::Result<()> {
         history: History::new(),
         checking: Arc::new(AtomicBool::new(false)),
         checked: None,
+        tried: Arc::new(Mutex::new(None)),
         scanning: Arc::new(AtomicBool::new(false)),
         scanned: None,
         look_now: Arc::new(AtomicBool::new(false)),
@@ -1124,11 +1220,9 @@ fn main() -> anyhow::Result<()> {
     ext.on(move |fix: HealthFixRequest| {
         let message = match (fix.part.as_str(), fix.action.as_known()) {
             ("account", Some(Action::ACTION_AUTH)) => {
-                "Sign this machine in to Spacesheep yourself, in a terminal on it: \
-                                                `npx -y spacesheep@latest login`, or `npx -y spacesheep@latest connect \
-                                                <key>` where there's no browser, with a key from \
-                                                https://spacesheep.dev/settings/api-keys (never posted)."
-                    .to_string()
+                let mut words = ADD_KEY.to_string();
+                words[..1].make_ascii_uppercase();
+                format!("{words}. Never post the key.")
             }
             _ => {
                 let parts = health(&lock(&st));
