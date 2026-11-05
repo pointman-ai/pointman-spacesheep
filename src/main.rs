@@ -26,7 +26,7 @@ use pointman_extension::protocol::{
 };
 use pointman_extension::v1::health::{part::State, Action, Part};
 use pointman_extension::v1::ThreadRef;
-use pointman_extension::{Extension, Handle};
+use pointman_extension::{Extension, Handle, Job};
 use serde_json::{json, Value};
 use spacesheep::cli::{self, Cli, Via};
 use spacesheep::pages::{self, Known, Seen};
@@ -1253,6 +1253,12 @@ fn main() -> anyhow::Result<()> {
 
     let t = talk.clone();
     ext.every(TICK, move |_: &Handle| lock(&t).tick(), "talk");
+
+    // `/spacesheep add` posted (an agent, an older app): the apps open the key's form for it
+    ext.command("spacesheep.add", |_: &Job| {
+        Ok(json!({"text": "A Spacesheep API key is added in the Pointman app, so it never goes in a post: type \
+                           `/spacesheep add` there and paste it. It's on spacesheep.dev: Settings › API keys."}))
+    });
 
     let st = status.clone();
     ext.on(move |_: HealthCheckRequest| Ok(HealthCheckResponse { parts: health(&lock(&st)), ..Default::default() }));

@@ -49,6 +49,16 @@ value = "ss_[A-Za-z0-9]{16,200}"
 placeholder = "ss_…"
 needed = 0                       # a machine signed in by hand needs none; health's account part asks when one isn't
 
+# `/spacesheep add`: the apps open the key's form above and seal it in the vault as spacesheep.key. No name: the
+# extension opens only that one item.
+[[commands]]
+kind = "spacesheep.add"
+title = "Add a Spacesheep API key"
+params = { type = "object", properties = {} }
+slash = "add"
+form = "key"
+summary = "Add a Spacesheep API key: each node that isn't signed in signs itself in with a key of its own"
+
 [[events]]
 name = "spacesheep.talk"
 description = "Talk on or off for the account, the agents listened for, and when the last message came."

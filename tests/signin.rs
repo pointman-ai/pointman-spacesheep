@@ -102,7 +102,7 @@ fn a_minted_key_that_isnt_kept_is_saved_at_the_next_try_and_no_other_is_minted()
     );
     let why = part(&health, "account")["why"].as_str().unwrap().to_string();
     assert!(why.contains("minted it a key, \"mac-m4\" at"), "{why}");
-    assert!(why.contains("✗ could not check ss_…: fetch failed"), "the CLI's words, with the key cut: {why}");
+    assert!(why.contains("exited 1: could not check ss_…: fetch failed"), "the CLI's words, with the key cut: {why}");
     assert!(!why.contains("ss_minted") && !why.contains(VAULT_KEY), "{why}");
     let unsaved = fake.unsaved_keys();
     assert!(unsaved.len() == 1 && unsaved[0].starts_with("ss_minted"), "{unsaved:?}");
