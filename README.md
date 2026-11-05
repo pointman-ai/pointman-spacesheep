@@ -118,17 +118,29 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
 
 | Part | ok | not ok |
 |---|---|---|
-| `account`: the account's Talk, the one switch | `talk status` says `enabled` (read every minute, and after Spacesheep stops a listener) | stopped: Talk off for the account, or no Pro or Team plan; failing: the machine not signed in (`needs: auth`), or `talk status` failing |
+| `account`: the account's Talk, the one switch | `talk status` says `enabled` (read every minute, and after Spacesheep stops a listener) | stopped: Talk off for the account, or no Pro or Team plan; failing: the machine not signed in (`needs: auth`: what the vault's key did, or to run `/spacesheep add`), or `talk status` failing |
 | `listeners`: Talk listeners | listening for each agent here whose session published a page, with the last message's time | failing: one that keeps ending, the node not answering `agents.sessions`, the pages not readable, a post that didn't go out, or no CLI; stopped: Talk off, or no agent here has published a page in its current session |
 
 The `spacesheep.talk` event says whether Talk is on, who's listened for, and when the last message came.
 
 ## Signing in
 
-Once per machine, by a person: `npx -y spacesheep@latest login` in a terminal on it, or
-`npx -y spacesheep@latest connect <key>` where there's no browser, with a key from
-https://spacesheep.dev/settings/api-keys. The CLI keeps the sign-in in `~/.config/spacesheep`. An agent whose
-`whoami` fails asks its person in the thread to sign the machine in, and never asks for a key in a post.
+Once for every node: `/spacesheep add` in the app seals an API key from https://spacesheep.dev/settings/api-keys in
+the vault as `spacesheep.key`. A node that isn't signed in then signs itself in within a minute, with a key of its own:
+
+1. `spacesheep keys create --name <machine> --json`, with the vault's key in its environment as `SPACESHEEP_KEY`
+   (which the CLI reads before its login file), mints a key named after the machine.
+2. `spacesheep keys save --name <machine>` reads that key from stdin, checks it with spacesheep.dev, and keeps it in
+   `~/.config/spacesheep`, as `login` does.
+
+Neither key is ever a word of a command (anyone on the machine can read those in `ps`), nor in the log, a post or
+health. Each machine's key shows under its name in Settings › API keys, to revoke on its own. A machine already
+signed in keeps its own key, and one signed in by hand (`npx -y spacesheep@latest login` in a terminal on it) needs
+no vault key. A key Spacesheep refuses is tried again after 30 minutes, or at once when the vault's key changes;
+health's `account` part says why until then.
+
+An agent whose `whoami` fails asks its person in the thread to run `/spacesheep add`, and never asks for a key in a
+post.
 
 ## Commands and settings
 
@@ -144,6 +156,7 @@ the one switch.
 | `references/` | Shipped with the behaviour and handed to every run: `pages.md` (how to write a page people take in: 15 researched rules with sources), `check.py` (the checker agents run before each deploy; `python3 -m unittest` runs its tests) and `template.html` (a starter that passes it) |
 | `src/main.rs` | The process: the looks, the listeners, the posts and health |
 | `src/cli.rs`, `src/said.rs`, `src/pages.rs`, `src/words.rs` | Finding and stopping the CLI, reading what `talk listen` prints, who published each page, and the post's words (and whom a message calls) |
+| `src/signin.rs` | Signing a machine in with the vault's key: a key of its own, minted and kept |
 | `tests/` | Under the SDK's stand-in node with a fake `spacesheep` (`talk.rs`), the manifest (`manifest.rs`), and the real CLI signed out (`real_cli.rs`, when `SPACESHEEP_REAL_CLI` is npx's folder) |
 
 ## Development

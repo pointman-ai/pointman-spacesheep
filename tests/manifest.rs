@@ -32,4 +32,15 @@ fn the_manifest_keeps_to_cores_limits() {
     for e in m["events"].as_array().unwrap() {
         assert!(e["name"].as_str().unwrap().starts_with("spacesheep."), "{e}");
     }
+    // `/spacesheep add`: the one key that signs each node in, which only the extension may open (EXT-132)
+    let credentials = m["credentials"].as_array().unwrap();
+    assert_eq!(credentials.len(), 1);
+    let key = &credentials[0];
+    assert_eq!(key["item"].as_str(), Some("spacesheep.key"));
+    let secrets: Vec<&str> = p["secrets"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    assert_eq!(secrets, ["spacesheep.key"], "only the key it signs in with");
+    assert_eq!(key["needed"].as_integer(), Some(0), "a machine signed in by hand needs no key in the vault");
+    let value = fancy_regex::Regex::new(&format!("^(?:{})$", key["value"].as_str().unwrap())).unwrap();
+    assert!(value.is_match("ss_0123456789abcdef0123456789abcdef").unwrap(), "a key as spacesheep.dev makes one");
+    assert!(!value.is_match("ssc_0123456789abcdef").unwrap(), "a one-time sign-in code isn't a key");
 }

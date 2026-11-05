@@ -1,10 +1,10 @@
 //! Spacesheep's CLI: where it is, and running it. The machine's own `spacesheep` when it has one, else npx's copy of
 //! `spacesheep@latest` run with node once npx has said where it is (`copy_from`), else `npx -y spacesheep@latest`;
-//! signed in with the machine's own key (~/.config/spacesheep, the CLI's). Each run is the leader of a process group
+//! signed in with the machine's own key (~/.config/spacesheep, the CLI's; signin.rs makes one from the vault's). Each run is the leader of a process group
 //! of its own, so stopping one stops npx's node under it too.
 
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -180,7 +180,29 @@ pub struct Ran {
 
 /// Runs the CLI once and waits up to `timeout` for it (`talk status`).
 pub fn run(cli: &Cli, args: &[&str], timeout: Duration) -> std::io::Result<Ran> {
-    let mut child = cli.command(args).spawn()?;
+    run_with(cli, args, &[], None, timeout)
+}
+
+/// As `run`, with these in its environment and this on its stdin: how a key reaches the CLI without ever being one
+/// of its words, which anyone on the machine can read in `ps` (EXT-132).
+pub fn run_with(
+    cli: &Cli,
+    args: &[&str],
+    env: &[(&str, &str)],
+    input: Option<&str>,
+    timeout: Duration,
+) -> std::io::Result<Ran> {
+    let mut command = cli.command(args);
+    command.envs(env.iter().copied());
+    if input.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command.spawn()?;
+    if let Some(text) = input {
+        // a line far smaller than a pipe's buffer, so this never waits on the CLI; closed after, so it reads its end
+        let mut stdin = child.stdin.take().expect("piped");
+        let _ = stdin.write_all(text.as_bytes());
+    }
     let mut out = child.stdout.take().expect("piped");
     let mut err = child.stderr.take().expect("piped");
     let reading = std::thread::spawn(move || {
