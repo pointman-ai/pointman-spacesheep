@@ -187,18 +187,64 @@ fn a_page_whose_versions_come_in_two_pages_is_read_to_its_last() {
     assert_eq!(version_reads(&fake), want, "the second page from the first's page.next, then no more");
 }
 
+/// Why a read that never reaches page-s-1's last page fails, with this cursor repeating.
+fn stuck_on(cursor: &str) -> String {
+    format!("couldn't read who published page page-s-1: the next page of its versions is the one just read ({cursor})")
+}
+
 #[test]
-fn a_next_page_that_names_the_one_just_read_ends_the_read() {
+fn a_read_that_cant_reach_the_last_page_keeps_nothing_and_recovers_with_the_page_unchanged() {
     let board = Board::with(vec![agent("scene", "s-1", 41)]);
     let fake = Fake::new();
     fake.published_in_two_pages("s-1", "c1");
     fake.prints("s-1", &format!("{MESSAGE}\n"));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 
+    assert!(wait(WITHIN, || node.log().contains(&stuck_on("c1"))), "{:?}\n{}", fake.calls(), node.log());
+    assert_eq!(fake.listens("s-1"), 0, "part of a page's history isn't all of it: {:?}", fake.calls());
+    assert!(board.posts().is_empty());
+
+    // the cursor moves on, with `list` as it was: the page is still due, so the next read gets it all
+    fake.older_page("s-1", "c1", "");
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
-    assert_eq!(got.len(), 1, "what was read still counts: {:?}\n{}", fake.calls(), node.log());
-    assert_eq!(version_reads(&fake).len(), 2, "{:?}", fake.calls());
-    assert!(node.log().contains("its versions' next page is the one just read (c1)"), "{}", node.log());
+    assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
+    assert_eq!(got[0]["thread_id"], 41);
+}
+
+#[test]
+fn a_page_that_changed_and_cant_be_read_to_its_last_page_keeps_who_published_it() {
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.published_in_two_pages("s-1", "");
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{:?}\n{}", fake.calls(), node.log());
+
+    std::thread::sleep(Duration::from_millis(1100)); // `updated_at` is to the second
+    fake.published_in_two_pages("s-1", "c1");
+    assert!(wait(WITHIN, || node.log().contains(&stuck_on("c1"))), "{:?}\n{}", fake.calls(), node.log());
+    assert!(!node.log().contains("not listening for @scene"), "{}", node.log());
+
+    fake.push("s-1", &format!("{MESSAGE}\n"));
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    assert_eq!(fake.listens("s-1"), 1, "the same listener all along: {:?}", fake.calls());
+}
+
+#[test]
+fn versions_that_never_end_fail_the_read_at_the_calls_allowed() {
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.published_in_two_pages("s-1", "c2");
+    for n in 2..=60 {
+        fake.older_page("s-1", &format!("c{n}"), &format!("c{}", n + 1));
+    }
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    let why = "couldn't read who published page page-s-1: its versions don't end within 50 calls";
+    // 50 calls, each at least one 50 ms poll of the process
+    let within = Duration::from_secs(30);
+    assert!(wait(within, || node.log().contains(why)), "{} calls\n{}", version_reads(&fake).len(), node.log());
+    assert_eq!(fake.listens("s-1"), 0, "{:?}", fake.calls());
 }
 
 #[test]

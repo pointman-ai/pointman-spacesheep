@@ -216,12 +216,21 @@ impl Fake {
         let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
         let newest = json!({"versions": [{"id": "c2", "created_at": at, "client": {"transport": "mcp"}}], "page": {"next": "c1"}});
         std::fs::write(self.file(&format!("versions.{id}.json")), newest.to_string()).unwrap();
-        let older = json!({"versions": [{"id": "c1", "created_at": at, "client": {"session_id": session}}], "page": {"next": next}});
-        std::fs::write(self.file(&format!("versions.{id}.after-c1.json")), older.to_string()).unwrap();
+        self.older_page(session, "c1", next);
         let spaces = json!({"spaces": [{"id": id, "updated_at": at}], "page": {"next": ""}});
         let tmp = self.file("spaces.json.tmp");
         std::fs::write(&tmp, spaces.to_string()).unwrap();
         std::fs::rename(tmp, self.file("spaces.json")).unwrap();
+    }
+
+    /// What `versions --after=<after>` answers for this session's page, naming `next`: `list` doesn't change, so the
+    /// page itself hasn't.
+    pub fn older_page(&self, session: &str, after: &str, next: &str) {
+        let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
+        let older = json!({"versions": [{"id": after, "created_at": at, "client": {"session_id": session}}], "page": {"next": next}});
+        let tmp = self.file(&format!("versions.{session}.{after}.tmp"));
+        std::fs::write(&tmp, older.to_string()).unwrap();
+        std::fs::rename(tmp, self.file(&format!("versions.page-{session}.after-{after}.json"))).unwrap();
     }
 
     /// Only these sessions' pages in `list`, as when newer pages have pushed the others out of the account's latest.

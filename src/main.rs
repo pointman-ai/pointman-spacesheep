@@ -1072,7 +1072,7 @@ fn publishers(
     known.keep(&list, now() as i64);
     let stale: Vec<&pages::Space> = list.iter().filter(|s| known.stale(s)).collect();
     for space in stale {
-        match versions(h, cli, &space.id) {
+        match versions(cli, &space.id) {
             Ok(got) => known.read(space, pages::sessions(&got)),
             Err(why) => h.log(format!("couldn't read who published page {}: {why}", space.id)),
         }
@@ -1086,9 +1086,10 @@ fn publishers(
 
 /// A page's versions, every page of them, newest first: `versions <space> --json`, then again `--after` each
 /// answer's `page.next` until it's empty (the new API's; CLI 1.35 ignores both flags and answers with no `page`, so
-/// it's one call). A call that fails fails the read, so it's tried again at the next one; past VERSION_CALLS, or a
-/// cursor that doesn't move, it stops with what it has and says so in the log.
-fn versions(h: &Handle, cli: &Cli, space: &str) -> Result<Vec<Value>, String> {
+/// it's one call). Anything short of the last page fails the read: a call that fails, a cursor that doesn't move, or
+/// VERSION_CALLS calls. What's known of the page then stays as it was and it's read again next time: sessions from
+/// part of its history would be kept as all of it until the page changed, and could pin it to a later session's thread.
+fn versions(cli: &Cli, space: &str) -> Result<Vec<Value>, String> {
     let mut all = Vec::new();
     let mut after: Option<String> = None;
     for _ in 0..VERSION_CALLS {
@@ -1105,17 +1106,12 @@ fn versions(h: &Handle, cli: &Cli, space: &str) -> Result<Vec<Value>, String> {
         match next {
             None => return Ok(all),
             Some(next) if after.as_ref() == Some(&next) => {
-                h.log(format!(
-                    "page {space}: its versions' next page is the one just read ({next}): {} read",
-                    all.len()
-                ));
-                return Ok(all);
+                return Err(format!("the next page of its versions is the one just read ({next})"));
             }
             Some(next) => after = Some(next),
         }
     }
-    h.log(format!("page {space}: only its newest {} versions read, in {VERSION_CALLS} calls", all.len()));
-    Ok(all)
+    Err(format!("its versions don't end within {VERSION_CALLS} calls"))
 }
 
 /// The account's switch as the log says it.
