@@ -77,7 +77,9 @@ case "$1 $2" in
   "list --json")
     if [ -f "$here/spaces.json" ]; then cat "$here/spaces.json"; else echo '[]'; fi;;
   "versions "*)
-    if [ -f "$here/versions.$2.json" ]; then cat "$here/versions.$2.json"; else printf '\n  ✗ no space %s\n\n' "$2" >&2; exit 1; fi;;
+    page=""
+    for a in "$@"; do case "$a" in --after=*) page=".after-${a#--after=}";; esac; done
+    if [ -f "$here/versions.$2$page.json" ]; then cat "$here/versions.$2$page.json"; else printf '\n  ✗ no space %s\n\n' "$2" >&2; exit 1; fi;;
   *)
     printf '\n  ✗ unknown command: %s\n\n' "$*" >&2; exit 1;;
 esac
@@ -202,6 +204,21 @@ impl Fake {
             "page": {"next": ""}});
         std::fs::write(self.file(&format!("versions.{id}.json")), versions.to_string()).unwrap();
         let spaces = json!({"spaces": [{"id": id, "name": "@james/a-page", "updated_at": at}], "page": {"next": ""}});
+        let tmp = self.file("spaces.json.tmp");
+        std::fs::write(&tmp, spaces.to_string()).unwrap();
+        std::fs::rename(tmp, self.file("spaces.json")).unwrap();
+    }
+
+    /// The account's one page, its versions in two pages of the new API's answer: the newest a version another account
+    /// pushed, with `page.next` "c1"; the older this session's own, whose `page.next` is `next` ("" for the last page).
+    pub fn published_in_two_pages(&self, session: &str, next: &str) {
+        let id = format!("page-{session}");
+        let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
+        let newest = json!({"versions": [{"id": "c2", "created_at": at, "client": {"transport": "mcp"}}], "page": {"next": "c1"}});
+        std::fs::write(self.file(&format!("versions.{id}.json")), newest.to_string()).unwrap();
+        let older = json!({"versions": [{"id": "c1", "created_at": at, "client": {"session_id": session}}], "page": {"next": next}});
+        std::fs::write(self.file(&format!("versions.{id}.after-c1.json")), older.to_string()).unwrap();
+        let spaces = json!({"spaces": [{"id": id, "updated_at": at}], "page": {"next": ""}});
         let tmp = self.file("spaces.json.tmp");
         std::fs::write(&tmp, spaces.to_string()).unwrap();
         std::fs::rename(tmp, self.file("spaces.json")).unwrap();

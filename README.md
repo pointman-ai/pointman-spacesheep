@@ -43,8 +43,9 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   no settings of its own (James, thread 6914 [16235]: no list of agents).
 - **Who's listened for:** each agent here whose current session published a page. Every 5 minutes, while Talk is
   on, it reads the account's latest pages (`spacesheep list --json`) and, for each new or changed one, who pushed
-  its versions (`versions <page> --json`: each version's `client.session_id`, or `pushed_by.session_id` from servers
-  before Spacesheep's new API; an empty one is another account's version), kept in the state folder
+  its versions (`versions <page> --json --limit=200`, then `--after=<page.next>` until it's empty: each version's
+  `client.session_id`, or `pushed_by.session_id` from servers before Spacesheep's new API, whose CLI reads its newest
+  30 in one call; an empty one is another account's version), kept in the state folder
   (`pages.json`). That list is the latest 50, so a page that leaves it is kept for 30 days from its last change,
   up to 500 pages: a burst of other pages (core's docs job updates dozens at once) doesn't silence it. Every 60 s it reads the node's agents (`agents.sessions`), and for each publisher with a thread
   it runs `spacesheep talk listen --session <id>` (the machine's `spacesheep`, else `npx -y spacesheep@latest`),

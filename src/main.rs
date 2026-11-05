@@ -50,6 +50,10 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often the pages are read for who published them, and how long each read may take.
 const PAGES_EVERY: Duration = Duration::from_secs(300);
 const PAGES_TIMEOUT: Duration = Duration::from_secs(60);
+/// A page's versions per call, the new API's most (ListVersions' `limit`), and the calls one page's versions may take:
+/// 50 × 200 = 10,000 versions, so a cursor that never empties can't keep a read going.
+const VERSIONS_LIMIT: &str = "--limit=200";
+const VERSION_CALLS: usize = 50;
 /// How often the CLI's help is read for whether `talk reply` takes `--to` (npx's spacesheep@latest moves on its own),
 /// and npx is asked where its copy of spacesheep@latest is (bringing it up to date).
 const HELP_EVERY: Duration = Duration::from_secs(3600);
@@ -1068,17 +1072,9 @@ fn publishers(
     known.keep(&list, now() as i64);
     let stale: Vec<&pages::Space> = list.iter().filter(|s| known.stale(s)).collect();
     for space in stale {
-        let ran = cli::run(cli, &["versions", &space.id, "--json"], PAGES_TIMEOUT);
-        match ran.as_ref().ok().filter(|r| r.code == Some(0)).and_then(|r| pages::sessions(&r.stdout)) {
-            Some(who) => known.read(space, who),
-            None => h.log(format!(
-                "couldn't read who published page {}: {}",
-                space.id,
-                match ran {
-                    Ok(r) => r.stderr,
-                    Err(e) => e.to_string(),
-                }
-            )),
+        match versions(h, cli, &space.id) {
+            Ok(got) => known.read(space, pages::sessions(&got)),
+            Err(why) => h.log(format!("couldn't read who published page {}: {why}", space.id)),
         }
     }
     for (page, thread) in known.settle(seen) {
@@ -1086,6 +1082,40 @@ fn publishers(
     }
     let _ = std::fs::write(file, known.to_json());
     Ok((known.publishers(), known.threads()))
+}
+
+/// A page's versions, every page of them, newest first: `versions <space> --json`, then again `--after` each
+/// answer's `page.next` until it's empty (the new API's; CLI 1.35 ignores both flags and answers with no `page`, so
+/// it's one call). A call that fails fails the read, so it's tried again at the next one; past VERSION_CALLS, or a
+/// cursor that doesn't move, it stops with what it has and says so in the log.
+fn versions(h: &Handle, cli: &Cli, space: &str) -> Result<Vec<Value>, String> {
+    let mut all = Vec::new();
+    let mut after: Option<String> = None;
+    for _ in 0..VERSION_CALLS {
+        let cursor = after.as_ref().map(|c| format!("--after={c}"));
+        let mut args = vec!["versions", space, "--json", VERSIONS_LIMIT];
+        args.extend(cursor.as_deref());
+        let ran = cli::run(cli, &args, PAGES_TIMEOUT).map_err(|e| e.to_string())?;
+        if ran.code != Some(0) {
+            return Err(ran.stderr);
+        }
+        let (got, next) = pages::versions_page(&ran.stdout)
+            .ok_or_else(|| format!("`spacesheep versions` said {:?}", cli::last_words(&ran.stdout)))?;
+        all.extend(got);
+        match next {
+            None => return Ok(all),
+            Some(next) if after.as_ref() == Some(&next) => {
+                h.log(format!(
+                    "page {space}: its versions' next page is the one just read ({next}): {} read",
+                    all.len()
+                ));
+                return Ok(all);
+            }
+            Some(next) => after = Some(next),
+        }
+    }
+    h.log(format!("page {space}: only its newest {} versions read, in {VERSION_CALLS} calls", all.len()));
+    Ok(all)
 }
 
 /// The account's switch as the log says it.

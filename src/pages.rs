@@ -35,15 +35,23 @@ pub fn spaces(text: &str) -> Option<Vec<Space>> {
     )
 }
 
-/// The sessions that pushed a version, from `versions <space> --json`, the first version's first, each once with
-/// when its first version was pushed (`created_at`, "" when it's not given); None if it isn't that answer.
+/// One answer of `versions <space> --json`: its versions, and the cursor to the next page (the new API's
+/// `page.next`: empty on the last page; today's answer has no `page`, so it's all there is). None if it isn't one.
+pub fn versions_page(text: &str) -> Option<(Vec<Value>, Option<String>)> {
+    let v: Value = serde_json::from_str(text.trim()).ok()?;
+    let versions = v["versions"].as_array()?.clone();
+    let next = v["page"]["next"].as_str().filter(|n| !n.is_empty()).map(str::to_string);
+    Some((versions, next))
+}
+
+/// The sessions that pushed a page's versions (every page of `versions <space> --json`, in the order read), the
+/// first version's first, each once with when its first version was pushed (`created_at`, "" when it's not given).
 ///
 /// Two shapes: today's numbers each version and names its session in `pushed_by.session_id`. Spacesheep's new API
 /// (ListVersions) lists them newest first with no number, and names it in `client.session_id`, read first. Either
 /// is set only on the reading key's own account's versions, so an empty one is someone else's and is skipped.
-pub fn sessions(text: &str) -> Option<Vec<(String, String)>> {
-    let v: Value = serde_json::from_str(text.trim()).ok()?;
-    let mut versions: Vec<&Value> = v["versions"].as_array()?.iter().collect();
+pub fn sessions(versions: &[Value]) -> Vec<(String, String)> {
+    let mut versions: Vec<&Value> = versions.iter().collect();
     if versions.iter().any(|x| x["number"].is_i64()) {
         versions.sort_by_key(|x| x["number"].as_i64().unwrap_or(i64::MAX));
     } else {
@@ -58,7 +66,7 @@ pub fn sessions(text: &str) -> Option<Vec<(String, String)>> {
             out.push((s.to_string(), x["created_at"].as_str().unwrap_or("").to_string()));
         }
     }
-    Some(out)
+    out
 }
 
 /// Where this node has seen each of its sessions' agents run, for a page's own thread (EXT-128).
@@ -262,6 +270,13 @@ pub fn secs(at: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
+    /// The sessions in one answer, a page whose versions all came in one call.
+    fn read(text: &str) -> Vec<(String, String)> {
+        let (versions, next) = versions_page(text).unwrap();
+        assert_eq!(next, None, "the last page");
+        sessions(&versions)
+    }
+
     #[test]
     fn spaces_and_their_publishers_from_the_clis_answers() {
         let list = r#"[{"id": "p1", "updated_at": "2026-10-20T13:27:34Z", "title": "a"}, {"id": "p2", "updated_at": "t2"}, {"title": "no id"}]"#;
@@ -273,10 +288,10 @@ mod tests {
             {"number": 2, "created_at": "2026-11-04T08:06:16.089Z", "pushed_by": {"label": "Claude Code", "session_id": "s-2"}},
             {"number": 1, "created_at": "2026-11-04T08:05:08.589Z", "pushed_by": {"label": "Claude Code", "session_id": "s-1"}},
             {"number": 0, "via": "web"}]}"#;
-        let got = sessions(versions).unwrap();
+        let got = read(versions);
         let want = [("s-1", "2026-11-04T08:05:08.589Z"), ("s-2", "2026-11-04T08:06:16.089Z")];
         assert_eq!(got, want.map(|(s, at)| (s.to_string(), at.to_string())), "the first version's first, at its first");
-        assert_eq!(sessions("{}"), None);
+        assert_eq!(versions_page("{}"), None);
     }
 
     #[test]
@@ -293,9 +308,31 @@ mod tests {
             {"id": "c2", "created_at": "2026-11-04T08:06:16.089Z", "client": {"session_id": "s-2"}},
             {"id": "c1", "created_at": "2026-11-04T08:05:08.589Z", "client": {"session_id": "s-1"}},
             {"id": "c0", "created_at": "2026-11-04T08:00:00Z", "client": {"session_id": ""}}], "page": {"next": ""}}"#;
-        let got = sessions(versions).unwrap();
+        let got = read(versions);
         let want = [("s-1", "2026-11-04T08:05:08.589Z"), ("s-2", "2026-11-04T08:06:16.089Z")];
         assert_eq!(got, want.map(|(s, at)| (s.to_string(), at.to_string())), "the first version's first, at its first");
+    }
+
+    #[test]
+    fn a_page_of_versions_names_the_next_and_the_older_pages_first_push_comes_first() {
+        // the newest page: s-2's version, and a cursor to the older ones
+        let newest = r#"{"versions": [
+            {"id": "c3", "created_at": "2026-11-05T10:00:00Z", "client": {"session_id": "s-2"}},
+            {"id": "c2", "created_at": "2026-11-05T09:00:00Z", "client": {"transport": "mcp"}}], "page": {"next": "c2"}}"#;
+        let (mut versions, next) = versions_page(newest).unwrap();
+        assert_eq!(next.as_deref(), Some("c2"));
+        // the oldest: s-1 pushed the page first, within the same second as s-2's first push on it
+        let oldest = r#"{"versions": [
+            {"id": "c1", "created_at": "2026-11-04T08:05:08Z", "client": {"session_id": "s-2"}},
+            {"id": "c0", "created_at": "2026-11-04T08:05:08Z", "client": {"session_id": "s-1"}}], "page": {"next": ""}}"#;
+        let (older, next) = versions_page(oldest).unwrap();
+        assert_eq!(next, None, "an empty next is the last page");
+        versions.extend(older);
+        let got = sessions(&versions);
+        let want = [("s-1", "2026-11-04T08:05:08Z"), ("s-2", "2026-11-04T08:05:08Z")];
+        assert_eq!(got, want.map(|(s, at)| (s.to_string(), at.to_string())), "the oldest page's first push first");
+        // today's answer: no `page`, so all there is
+        assert_eq!(versions_page(r#"{"space": {}, "versions": []}"#), Some((vec![], None)));
     }
 
     #[test]
@@ -304,7 +341,7 @@ mod tests {
             {"number": 2, "client": {"session_id": "s-new"}, "pushed_by": {"session_id": "s-old"}},
             {"number": 1, "client": {"session_id": ""}, "pushed_by": {"session_id": "s-3"}},
             {"number": 3, "pushed_by": {"session_id": ""}}]}"#;
-        let got: Vec<String> = sessions(versions).unwrap().into_iter().map(|(s, _)| s).collect();
+        let got: Vec<String> = read(versions).into_iter().map(|(s, _)| s).collect();
         assert_eq!(got, ["s-3", "s-new"], "an empty session is someone else's: skipped");
     }
 
