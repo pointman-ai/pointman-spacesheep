@@ -79,6 +79,46 @@ fn with_no_key_in_the_vault_health_asks_for_spacesheep_add() {
 }
 
 #[test]
+fn a_minted_key_that_isnt_kept_is_saved_at_the_next_try_and_no_other_is_minted() {
+    let fake = Fake::new();
+    fake.signed_out();
+    fake.save_fails(true);
+    let board = Board::default();
+    // ten times faster than the others: the next try, SIGN_IN_AGAIN, is 3 s here
+    let node = spacesheep(&fake, &board, on())
+        .env("POINTMAN_SPACESHEEP_FASTER", "600")
+        .machine("mac-m4")
+        .secret("spacesheep.key", VAULT_KEY)
+        .start()
+        .unwrap();
+    let mut health = json!(null);
+    assert!(
+        wait(WITHIN, || {
+            health = node.call("health.check", json!({})).unwrap();
+            part(&health, "account")["why"].as_str().is_some_and(|w| w.contains("keeping it failed"))
+        }),
+        "{health}\n{:?}",
+        fake.calls()
+    );
+    let why = part(&health, "account")["why"].as_str().unwrap().to_string();
+    assert!(why.contains("minted it a key, \"mac-m4\" at"), "{why}");
+    assert!(why.contains("exited 1: could not check ss_…: fetch failed"), "the CLI's words, with the key cut: {why}");
+    assert!(!why.contains("ss_minted") && !why.contains(VAULT_KEY), "{why}");
+    let unsaved = fake.unsaved_keys();
+    assert!(unsaved.len() == 1 && unsaved[0].starts_with("ss_minted"), "{unsaved:?}");
+
+    fake.save_fails(false);
+    assert!(wait(Duration::from_secs(45), || fake.saved_key().is_some()), "{:?}", fake.calls());
+    assert_eq!(fake.saved_key().unwrap().trim(), unsaved[0], "the key minted first is the one kept");
+    let creates = fake.calls().iter().filter(|c| c.contains("keys create")).count();
+    assert_eq!(creates, 1, "no other key minted: {:?}", fake.calls());
+    assert!(wait(WITHIN, || {
+        part(&node.call("health.check", json!({})).unwrap(), "account")["state"] == "STATE_OK"
+    }));
+    assert!(!node.log().contains("ss_minted") && !node.log().contains(VAULT_KEY), "{}", node.log());
+}
+
+#[test]
 fn a_refused_key_is_said_and_not_tried_again_and_again() {
     let fake = Fake::new();
     fake.signed_out();

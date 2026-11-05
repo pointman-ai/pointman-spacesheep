@@ -43,4 +43,11 @@ fn the_manifest_keeps_to_cores_limits() {
     let value = fancy_regex::Regex::new(&format!("^(?:{})$", key["value"].as_str().unwrap())).unwrap();
     assert!(value.is_match("ss_0123456789abcdef0123456789abcdef").unwrap(), "a key as spacesheep.dev makes one");
     assert!(!value.is_match("ssc_0123456789abcdef").unwrap(), "a one-time sign-in code isn't a key");
+    // the slash command that opens that form: without it there's no `/spacesheep add` to type
+    let commands = m["commands"].as_array().unwrap();
+    let add = commands.iter().find(|c| c["kind"].as_str() == Some("spacesheep.add")).expect("a spacesheep.add command");
+    assert_eq!(add["slash"].as_str(), Some("add"));
+    assert_eq!(add["form"].as_str(), key["id"].as_str(), "it opens the key's form");
+    assert!(add["params"]["properties"].as_table().unwrap().is_empty(), "no name: only spacesheep.key is opened");
+    assert_eq!(add["params"]["additionalProperties"].as_bool(), Some(false), "nor a name passed through");
 }

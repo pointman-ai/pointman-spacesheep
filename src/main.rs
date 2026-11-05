@@ -26,7 +26,7 @@ use pointman_extension::protocol::{
 };
 use pointman_extension::v1::health::{part::State, Action, Part};
 use pointman_extension::v1::ThreadRef;
-use pointman_extension::{Extension, Handle};
+use pointman_extension::{Extension, Handle, Job};
 use serde_json::{json, Value};
 use spacesheep::cli::{self, Cli, Via};
 use spacesheep::pages::{self, Known, Seen};
@@ -289,32 +289,63 @@ fn account(ran: &std::io::Result<cli::Ran>) -> Account {
     }
 }
 
+/// The vault key last tried for signing in, and a key it minted that wasn't kept (EXT-132).
+#[derive(Debug, Default)]
+struct Tried {
+    /// Its fingerprint, and when.
+    last: Option<(u64, Instant)>,
+    /// Saved at the next try instead of minting another.
+    unsaved: Option<signin::Unsaved>,
+}
+
 /// A machine that isn't signed in, signed in with the vault's key (`/spacesheep add`): with a key it hasn't tried,
 /// at once; with the one that failed, again after SIGN_IN_AGAIN. None when it isn't due, so health keeps what the
 /// last try said. Only the key's fingerprint is kept, and the log names the vault item, never the key.
-fn from_vault(h: &Handle, cli: &Cli, tried: &Mutex<Option<(u64, Instant)>>) -> Option<Vault> {
+fn from_vault(h: &Handle, cli: &Cli, tried: &Mutex<Tried>) -> Option<Vault> {
     let key = match h.secret(signin::ITEM) {
         Ok(key) => key,
         Err(e) => return Some(Vault::Missing(format!("{e:#}"))),
     };
     let print = signin::fingerprint(&key);
-    {
-        let mut last = lock(tried);
-        if last.is_some_and(|(p, at)| p == print && at.elapsed() < scaled(SIGN_IN_AGAIN)) {
+    let mut unsaved = {
+        let mut t = lock(tried);
+        if t.last.is_some_and(|(p, at)| p == print && at.elapsed() < scaled(SIGN_IN_AGAIN)) {
             return None;
         }
-        *last = Some((print, Instant::now()));
+        t.last = Some((print, Instant::now()));
+        t.unsaved.take()
+    };
+    if let Some(stray) = unsaved.take_if(|u| u.from != print) {
+        h.log(format!(
+            "the key minted for this machine at {}, \"{}\", was never kept, and the vault's {} has changed since: \
+             if it's still listed at https://spacesheep.dev/settings/api-keys , revoke it there",
+            clock(stray.at),
+            stray.name,
+            signin::ITEM
+        ));
     }
     let name = signin::key_name(&h.machine());
-    match signin::sign_in(cli, &key, &name, STATUS_TIMEOUT) {
-        Ok(()) => {
+    let signed = signin::sign_in(cli, &key, &name, &mut unsaved, STATUS_TIMEOUT);
+    let kept = unsaved.as_ref().map(|u| (u.name.clone(), u.at));
+    lock(tried).unsaved = unsaved;
+    match (signed, kept) {
+        (Ok(()), _) => {
             h.log(format!(
                 "signed this machine in to Spacesheep with the vault's {}: its own key, \"{name}\"",
                 signin::ITEM
             ));
             Some(Vault::Signed(now()))
         }
-        Err(why) => {
+        (Err(signin::NotYet::Save(why)), Some((name, at))) => {
+            h.log(format!(
+                "signing this machine in with the vault's {}: the key minted for it at {}, \"{name}\", wasn't kept: \
+                 {why}. It's saved at the next try, and no other is minted",
+                signin::ITEM,
+                clock(at)
+            ));
+            Some(Vault::Unsaved { why, name, at })
+        }
+        (Err(signin::NotYet::Mint(why) | signin::NotYet::Save(why)), _) => {
             h.log(format!("signing this machine in with the vault's {}: {why}", signin::ITEM));
             Some(Vault::Failed(why))
         }
@@ -331,6 +362,9 @@ enum Vault {
     Missing(String),
     /// Signing in with it failed, in the CLI's words.
     Failed(String),
+    /// It minted this machine a key, `name` at `at`, that `keys save` didn't keep, in the CLI's words: saved at the
+    /// next try.
+    Unsaved { why: String, name: String, at: f64 },
     /// It signed this machine in, then.
     Signed(f64),
 }
@@ -686,8 +720,8 @@ struct Talk {
     history: History,
     checking: Arc<AtomicBool>,
     checked: Option<Instant>,
-    /// The vault key last tried for signing in (its fingerprint), and when.
-    tried: Arc<Mutex<Option<(u64, Instant)>>>,
+    /// The vault key last tried for signing in (its fingerprint), and when, and a key it minted that wasn't kept.
+    tried: Arc<Mutex<Tried>>,
     scanning: Arc<AtomicBool>,
     scanned: Option<Instant>,
     /// The account's switch or the publishers changed (on their own threads): look at the next tick.
@@ -1076,6 +1110,12 @@ fn signed_out_words(said: &str, vault: &Vault) -> String {
              Add a working key with `/spacesheep add` (it's tried again within a minute)",
             signin::ITEM
         ),
+        Vault::Unsaved { why, name, at } => format!(
+            "this machine isn't signed in to Spacesheep{said}: the vault's {} minted it a key, \"{name}\" at {}, but \
+             keeping it failed: {why}. It's saved at the next try, within half an hour, and no other key is minted",
+            signin::ITEM,
+            clock(*at)
+        ),
         Vault::Signed(at) => format!(
             "this machine isn't signed in to Spacesheep{said}, though the vault's {} signed it in at {}",
             signin::ITEM,
@@ -1200,7 +1240,7 @@ fn main() -> anyhow::Result<()> {
         history: History::new(),
         checking: Arc::new(AtomicBool::new(false)),
         checked: None,
-        tried: Arc::new(Mutex::new(None)),
+        tried: Arc::new(Mutex::new(Tried::default())),
         scanning: Arc::new(AtomicBool::new(false)),
         scanned: None,
         look_now: Arc::new(AtomicBool::new(false)),
@@ -1213,6 +1253,12 @@ fn main() -> anyhow::Result<()> {
 
     let t = talk.clone();
     ext.every(TICK, move |_: &Handle| lock(&t).tick(), "talk");
+
+    // `/spacesheep add` posted (an agent, an older app): the apps open the key's form for it
+    ext.command("spacesheep.add", |_: &Job| {
+        Ok(json!({"text": "A Spacesheep API key is added in the Pointman app, so it never goes in a post: type \
+                           `/spacesheep add` there and paste it. It's on spacesheep.dev: Settings › API keys."}))
+    });
 
     let st = status.clone();
     ext.on(move |_: HealthCheckRequest| Ok(HealthCheckResponse { parts: health(&lock(&st)), ..Default::default() }));

@@ -2,7 +2,7 @@
 //! state the test sets and keeps each `board.post`, with a fake `spacesheep` (a shell script that logs each call
 //! beside itself, prints what the test put there for each run of `talk listen`, then listens until it's stopped,
 //! printing whatever the test pushes; and answers `talk status`, `list` and `versions` from files the test writes,
-//! and `keys create` and `keys save` as a signed-out machine signing itself in).
+//! and `keys create` and `keys save` as a signed-out machine signing itself in, a save failing when told to).
 //! No test reaches spacesheep.dev or the board.
 #![allow(dead_code)]
 
@@ -69,6 +69,10 @@ case "$1 $2" in
     if [ -f "$here/refuse" ]; then printf '\n  ✗ the server rejected that key\n\n' >&2; exit 1; fi
     printf '{"key": "ss_minted%s", "name": "%s", "scope": "full"}\n' "$$" "$4";;
   "keys save")
+    if [ -f "$here/save-fails" ]; then
+      key=$(cat); echo "$key" >> "$here/unsaved"
+      printf '\n  ✗ could not check %s: fetch failed\n\n' "$key" >&2; exit 1
+    fi
     cat > "$here/saved";;
   "list --json")
     if [ -f "$here/spaces.json" ]; then cat "$here/spaces.json"; else echo '[]'; fi;;
@@ -216,6 +220,20 @@ impl Fake {
     /// What `keys save` read on its stdin, when it ran.
     pub fn saved_key(&self) -> Option<String> {
         std::fs::read_to_string(self.file("saved")).ok()
+    }
+
+    /// `keys save` fails, as with no network, repeating the key it read in its error; or saves again.
+    pub fn save_fails(&self, fails: bool) {
+        if fails {
+            std::fs::write(self.file("save-fails"), "").unwrap();
+        } else {
+            std::fs::remove_file(self.file("save-fails")).unwrap();
+        }
+    }
+
+    /// Each key a failed `keys save` read, in turn.
+    pub fn unsaved_keys(&self) -> Vec<String> {
+        std::fs::read_to_string(self.file("unsaved")).unwrap_or_default().lines().map(String::from).collect()
     }
 
     /// A CLI whose `talk reply` takes `--to`, the message it answers, as its help says.

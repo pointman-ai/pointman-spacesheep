@@ -17,7 +17,7 @@
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.9.0"
+version = "0.9.1"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
 node = ">=0.4,<1"
@@ -48,6 +48,16 @@ item = "spacesheep.key"
 value = "ss_[A-Za-z0-9]{16,200}"
 placeholder = "ss_…"
 needed = 0                       # a machine signed in by hand needs none; health's account part asks when one isn't
+
+# `/spacesheep add`: the apps open the key's form above and seal it in the vault as spacesheep.key. No name: the
+# extension opens only that one item.
+[[commands]]
+kind = "spacesheep.add"
+title = "Add a Spacesheep API key"
+params = { type = "object", properties = {}, additionalProperties = false }
+slash = "add"
+form = "key"
+summary = "Add a Spacesheep API key: each node that isn't signed in signs itself in with a key of its own"
 
 [[events]]
 name = "spacesheep.talk"

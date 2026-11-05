@@ -137,7 +137,9 @@ Neither key is ever a word of a command (anyone on the machine can read those in
 health. Each machine's key shows under its name in Settings › API keys, to revoke on its own. A machine already
 signed in keeps its own key, and one signed in by hand (`npx -y spacesheep@latest login` in a terminal on it) needs
 no vault key. A key Spacesheep refuses is tried again after 30 minutes, or at once when the vault's key changes;
-health's `account` part says why until then.
+health's `account` part says why until then. A minted key that `keys save` couldn't keep (no network, say) is held in
+memory and saved at the next try, and no other is minted, so a failing save leaves no keys unused on spacesheep.dev.
+The CLI's errors reach health and the log with any `ss_…` key in them cut.
 
 An agent whose `whoami` fails asks its person in the thread to run `/spacesheep add`, and never asks for a key in a
 post.
