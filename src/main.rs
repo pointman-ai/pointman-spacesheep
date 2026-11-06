@@ -739,6 +739,8 @@ struct Talk {
     /// last asked, whether an ask is running, and whether one has answered yet.
     copy: Arc<Mutex<Option<Cli>>>,
     copied: Option<Instant>,
+    /// When the installed spacesheep's version was last read, and whether it is new enough (installed_is_current).
+    installed_checked: Option<(Instant, bool)>,
     copying: Arc<AtomicBool>,
     asked: Arc<AtomicBool>,
 }
@@ -767,7 +769,9 @@ impl Talk {
         self.event();
         let own = std::env::current_exe().ok();
         let places: Vec<PathBuf> = cli::PLACES.iter().map(PathBuf::from).collect();
-        let Some(cli) = cli::find(std::env::var_os("PATH").as_deref(), &places, own.as_deref()) else {
+        let path = std::env::var_os("PATH");
+        let installed = self.installed_is_current(path.as_deref(), &places, own.as_deref());
+        let Some(cli) = cli::find_with(path.as_deref(), &places, own.as_deref(), installed) else {
             self.stop_all();
             *lock(&self.current) = None;
             let mut st = lock(&self.status);
@@ -804,6 +808,39 @@ impl Talk {
         self.look(groups);
         lock(&self.status).looked = true;
         self.event();
+    }
+
+    /// Whether a `spacesheep` installed on the machine may be used: its `--version` is at least cli::MIN_CLI, read
+    /// again each HELP_EVERY (an upgrade is noticed). Too old, it is passed over for npx's current one, and the log
+    /// says so once. Not installed, or a version it can't read: true.
+    fn installed_is_current(
+        &mut self,
+        path: Option<&std::ffi::OsStr>,
+        places: &[PathBuf],
+        own: Option<&std::path::Path>,
+    ) -> bool {
+        let Some(installed) = cli::find_with(path, places, own, true).filter(|c| c.via == Via::Own) else {
+            return true;
+        };
+        if let Some((at, ok)) = self.installed_checked {
+            if at.elapsed() < scaled(HELP_EVERY) {
+                return ok;
+            }
+        }
+        let ran = cli::run(&installed, &["--version"], STATUS_TIMEOUT);
+        let old = ran.as_ref().is_ok_and(cli::too_old);
+        if old && self.installed_checked.is_none_or(|(_, ok)| ok) {
+            let said = ran.map(|r| r.stdout.trim().to_string()).unwrap_or_default();
+            self.h.log(format!(
+                "{} is {said}, older than {}.{}.{}: running npx's spacesheep@latest instead",
+                installed.program.display(),
+                cli::MIN_CLI.0,
+                cli::MIN_CLI.1,
+                cli::MIN_CLI.2
+            ));
+        }
+        self.installed_checked = Some((Instant::now(), !old));
+        !old
     }
 
     /// With npx: its copy of spacesheep@latest with node, asked for on a thread of its own each HELP_EVERY, or at
@@ -1277,6 +1314,7 @@ fn main() -> anyhow::Result<()> {
         current: Current::default(),
         copy: Arc::new(Mutex::new(None)),
         copied: None,
+        installed_checked: None,
         copying: Arc::new(AtomicBool::new(false)),
         asked: Arc::new(AtomicBool::new(false)),
     }));
