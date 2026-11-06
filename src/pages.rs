@@ -1,7 +1,7 @@
 //! Which sessions published a page: a page's Session tab talks to the session that deployed it, and every deploy
-//! records its session (`spacesheep versions list --space-id <id> --json`: each version's `client.session_id`). The spaces come from `spacesheep list --json` (the account's latest, with `id` and
-//! `updated_at`: a bare array today, `{spaces, page}` from the new API), so a page's versions are read
-//! again only when it has changed. That list is only the latest 50, so a page that leaves it is kept a while: it
+//! records its session (`spacesheep versions list --space-id <id> --json`: each version's `client.session_id`). The
+//! spaces come from `spacesheep spaces list --json` (every page of the account's spaces, with `id` and `updated_at`),
+//! so a page's versions are read again only when it has changed. A page that leaves the list is kept a while: it
 //! hasn't changed since, so who published it still holds (EXT-75).
 
 use std::collections::BTreeMap;
@@ -13,25 +13,28 @@ use serde_json::Value;
 pub const KEEP_DAYS: i64 = 30;
 pub const KEEP_MAX: usize = 500;
 
-/// A space as `list --json` gives it: its id, and when it last changed.
+/// A space as `spaces list --json` gives it: its id, and when it last changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Space {
     pub id: String,
     pub updated_at: String,
 }
 
-/// The spaces in `list --json`'s answer (an array, or `{spaces: […]}`); None if it isn't one.
-pub fn spaces(text: &str) -> Option<Vec<Space>> {
+/// One answer of `spaces list --json`: its spaces, and the cursor to the next page (`page.next`, empty on the last).
+/// None if it isn't one: a bare array is not, and a malformed cursor fails the read like a versions one.
+pub fn spaces_page(text: &str) -> Option<(Vec<Space>, Option<String>)> {
     let v: Value = serde_json::from_str(text.trim()).ok()?;
-    let rows = v.as_array().or_else(|| v["spaces"].as_array())?;
-    Some(
+    let rows = v["spaces"].as_array()?;
+    let next = cursor(&v)?;
+    Some((
         rows.iter()
             .filter_map(|r| {
-                let id = r["id"].as_str().or_else(|| r["uuid"].as_str())?;
+                let id = r["id"].as_str()?;
                 Some(Space { id: id.to_string(), updated_at: r["updated_at"].as_str().unwrap_or("").to_string() })
             })
             .collect(),
-    )
+        next,
+    ))
 }
 
 /// An answer's cursor to its next page: `page.next`, a string (empty on the last page). Outer None: the cursor is
@@ -285,10 +288,15 @@ mod tests {
 
     #[test]
     fn spaces_and_their_publishers_from_the_clis_answers() {
-        let list = r#"[{"id": "p1", "updated_at": "2026-10-20T13:27:34Z", "title": "a"}, {"id": "p2", "updated_at": "t2"}, {"title": "no id"}]"#;
-        let got = spaces(list).unwrap();
-        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["p1", "p2"]);
-        assert_eq!(spaces("not json"), None);
+        let list = r#"{"spaces": [{"id": "p1", "updated_at": "2026-10-20T13:27:34Z", "name": "a"}, {"id": "p2", "updated_at": "t2"}, {"name": "no id"}], "page": {"next": ""}}"#;
+        let (got, next) = spaces_page(list).unwrap();
+        assert_eq!((got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), next), (vec!["p1", "p2"], None));
+        assert_eq!(spaces_page("not json"), None);
+        assert_eq!(spaces_page(r#"[{"id": "p1"}]"#), None, "a bare array is not an answer");
+        assert_eq!(spaces_page(r#"{"spaces": []}"#), None, "no page, no last page");
+        for page in [r#"{"next": 7}"#, "{}", "null"] {
+            assert_eq!(spaces_page(&format!(r#"{{"spaces": [], "page": {page}}}"#)), None, "{page}");
+        }
         assert_eq!(versions_page("{}"), None);
     }
 
@@ -296,7 +304,8 @@ mod tests {
     fn the_new_apis_answers_name_the_same_spaces_and_sessions() {
         let list = r#"{"spaces": [{"id": "p1", "name": "@james/a", "updated_at": "2026-11-05T10:42:00Z"},
             {"id": "p2", "updated_at": "2026-11-05T10:41:59.120Z"}], "page": {"next": "50"}}"#;
-        let got = spaces(list).unwrap();
+        let (got, next) = spaces_page(list).unwrap();
+        assert_eq!(next.as_deref(), Some("50"));
         let want = [("p1", "2026-11-05T10:42:00Z"), ("p2", "2026-11-05T10:41:59.120Z")];
         assert_eq!(got.iter().map(|s| (s.id.as_str(), s.updated_at.as_str())).collect::<Vec<_>>(), want);
         // ListVersions: newest first, no number; on someone else's version `client` has only `transport` and `other`

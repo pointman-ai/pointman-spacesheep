@@ -350,7 +350,7 @@ fn npx_runs_the_cli_when_the_machine_has_no_spacesheep() {
     let calls = fake.calls();
     assert!(calls.contains(&"-y spacesheep@latest talk listen --session s-1".to_string()), "{calls:?}");
     assert!(calls.contains(&"-y spacesheep@latest talk status".to_string()), "{calls:?}");
-    assert!(calls.contains(&"-y spacesheep@latest list --json".to_string()), "{calls:?}");
+    assert!(calls.contains(&"-y spacesheep@latest spaces list --json --limit=200".to_string()), "{calls:?}");
 }
 
 #[test]
@@ -365,7 +365,7 @@ fn npxs_copy_runs_with_node_so_no_npm_exec_stays_under_each_listener() {
     assert_eq!(calls[0], "-y -p spacesheep@latest -c command -v spacesheep", "npx is asked first: {calls:?}");
     assert!(calls.contains(&"talk listen --session s-1".to_string()), "{calls:?}");
     assert!(calls.contains(&"talk status".to_string()), "{calls:?}");
-    assert!(calls.contains(&"list --json".to_string()), "{calls:?}");
+    assert!(calls.contains(&"spaces list --json --limit=200".to_string()), "{calls:?}");
     assert!(!calls[1..].iter().any(|c| c.starts_with("-y ")), "nothing else through npx: {calls:?}");
     let copy = fake.dir.path().join(".bin/spacesheep");
     let line = format!(
@@ -547,7 +547,7 @@ fn a_page_pushed_out_of_the_latest_list_still_reaches_its_agent() {
     assert!(wait(WITHIN, || fake.listens("s-1") == 1 && fake.listens("s-2") == 1), "{}", node.log());
 
     fake.listed_only(&["s-2"]);
-    let lists = || fake.calls().iter().filter(|c| *c == "list --json").count();
+    let lists = || fake.calls().iter().filter(|c| *c == "spaces list --json --limit=200").count();
     let before = lists();
     assert!(wait(WITHIN, || lists() >= before + 2), "two more reads of the pages: {}", node.log());
     assert!(!node.log().contains("not listening for @scene"), "{}", node.log());
@@ -635,12 +635,76 @@ fn calls_starting(fake: &Fake, word: &str) -> Vec<String> {
 }
 
 #[test]
+fn the_spaces_of_an_account_are_read_to_the_last_page_and_each_pages_versions_with_versions_list() {
+    // the account has more pages than one answer holds: this session's is on the second (EXT-141)
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.spaces_page("", &["page-other"], "c1");
+    fake.spaces_page("c1", &["page-s-1"], "");
+    fake.versions_of("page-other", "s-other");
+    fake.versions_of("page-s-1", "s-1");
+    fake.prints("s-1", &format!("{MESSAGE}\n"));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
+    assert_eq!(got[0]["thread_id"], 41);
+    assert_eq!(
+        calls_starting(&fake, "spaces "),
+        ["spaces list --json --limit=200", "spaces list --json --limit=200 --after=c1"],
+        "the second page from the first's page.next, then no more"
+    );
+    assert!(calls_starting(&fake, "list ").is_empty(), "today's list isn't run: {:?}", fake.calls());
+    assert_eq!(
+        calls_starting(&fake, "versions "),
+        [
+            "versions list --space-id page-other --json --limit=200",
+            "versions list --space-id page-s-1 --json --limit=200"
+        ]
+    );
+}
+
+#[test]
+fn a_spaces_list_that_fails_is_said_with_its_error_info_and_reads_no_versions() {
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.spaces_refuse(r#"{"code":"unauthenticated","message":"that key is not accepted","violations":[]}"#);
+    fake.prints("s-1", &format!("{MESSAGE}\n"));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    let said = "`spacesheep spaces list` failed: unauthenticated: that key is not accepted";
+    assert!(wait(WITHIN, || node.log().contains(said)), "{:?}\n{}", fake.calls(), node.log());
+    assert!(calls_starting(&fake, "list ").is_empty(), "no fallback after a refusal: {:?}", fake.calls());
+    assert!(calls_starting(&fake, "versions ").is_empty(), "{:?}", fake.calls());
+    assert_eq!(fake.listens("s-1"), 0);
+}
+
+#[test]
+fn a_spaces_answer_that_is_not_the_canonical_shape_or_has_a_malformed_cursor_fails_the_read() {
+    for (name, body) in
+        [("a bare array", "[]".to_string()), ("page.next 7", r#"{"spaces": [], "page": {"next": 7}}"#.into())]
+    {
+        let board = Board::with(vec![agent("scene", "s-1", 41)]);
+        let fake = Fake::new();
+        std::fs::write(fake.dir.path().join("spaces.json"), body).unwrap();
+        let node = spacesheep(&fake, &board, on()).start().unwrap();
+        assert!(
+            wait(WITHIN, || node.log().contains("`spacesheep spaces list` said")),
+            "{name}: {:?}\n{}",
+            fake.calls(),
+            node.log()
+        );
+        assert!(calls_starting(&fake, "versions ").is_empty(), "{name}: {:?}", fake.calls());
+    }
+}
+
+#[test]
 fn a_versions_call_that_fails_is_said_with_its_error_info_and_the_old_command_is_not_run() {
     // a 401, a 500 or an answer that doesn't parse is the read's error: no `versions <space>` is run in its place
     let board = Board::with(vec![agent("scene", "s-1", 41)]);
     let fake = Fake::new();
     fake.published("s-1");
-    fake.new_calls_refuse(r#"{"code":"unauthenticated","message":"that key is not accepted","violations":[]}"#);
+    fake.versions_refuse(r#"{"code":"unauthenticated","message":"that key is not accepted","violations":[]}"#);
     fake.prints("s-1", &format!("{MESSAGE}\n"));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 

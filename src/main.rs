@@ -1116,16 +1116,31 @@ fn publishers(
     Ok((known.publishers(), known.threads()))
 }
 
-/// The account's pages, from today's `list --json` (the latest 50). This is the one command the extension still calls
-/// by its old name: production doesn't serve `spaces list` yet (EXT-141). It moves to `spaces list` (every page, by
-/// `page.next`) when the server does, with no fallback; a `list` that fails is an error like any other.
+/// The account's pages: `spaces list --json --limit=200`, then again `--after` each answer's `page.next` until it's
+/// empty, failing as `versions` does (a call that fails, a cursor that doesn't move, or VERSION_CALLS calls).
 fn spaces(cli: &Cli) -> Result<Vec<pages::Space>, String> {
-    let ran = cli::run(cli, &["list", "--json"], PAGES_TIMEOUT).map_err(|e| e.to_string())?;
-    match ran.code {
-        Some(0) => pages::spaces(&ran.stdout)
-            .ok_or_else(|| format!("`spacesheep list` said {:?}", cli::last_words(&ran.stdout))),
-        _ => Err(format!("`spacesheep list` failed: {}", cli::refusal(&ran))),
+    let mut all = Vec::new();
+    let mut after: Option<String> = None;
+    for _ in 0..VERSION_CALLS {
+        let cursor = after.as_ref().map(|c| format!("--after={c}"));
+        let mut args = vec!["spaces", "list", "--json", VERSIONS_LIMIT];
+        args.extend(cursor.as_deref());
+        let ran = cli::run(cli, &args, PAGES_TIMEOUT).map_err(|e| e.to_string())?;
+        if ran.code != Some(0) {
+            return Err(format!("`spacesheep spaces list` failed: {}", cli::refusal(&ran)));
+        }
+        let (got, next) = pages::spaces_page(&ran.stdout)
+            .ok_or_else(|| format!("`spacesheep spaces list` said {:?}", cli::last_words(&ran.stdout)))?;
+        all.extend(got);
+        match next {
+            None => return Ok(all),
+            Some(next) if after.as_ref() == Some(&next) => {
+                return Err(format!("the next page of spaces is the one just read ({next})"));
+            }
+            Some(next) => after = Some(next),
+        }
     }
+    Err(format!("the spaces don't end within {VERSION_CALLS} calls"))
 }
 
 /// A page's versions, every page of them, newest first: `versions list --space-id <id> --json`, then again `--after`

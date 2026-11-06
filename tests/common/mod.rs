@@ -81,11 +81,14 @@ case "$1 $2" in
       if [ "$prev" = --space-id ]; then space="$a"; fi
       prev="$a"
     done
-    if [ -f "$here/new-fail" ]; then cat "$here/new-fail"; exit 1; fi
+    if [ -f "$here/versions-fail" ]; then cat "$here/versions-fail"; exit 1; fi
     f="$here/versions.$space$page.json"
     if [ -f "$f" ]; then cat "$f"; else printf '{"code":"not_found","message":"no such page of results"}\n'; exit 1; fi;;
-  "list --json")
-    if [ -f "$here/spaces.json" ]; then cat "$here/spaces.json"; else echo '[]'; fi;;
+  "spaces list")
+    page=""
+    for a in "$@"; do case "$a" in --after=*) page=".after-${a#--after=}";; esac; done
+    if [ -f "$here/new-fail" ]; then cat "$here/new-fail"; exit 1; fi
+    if [ -f "$here/spaces$page.json" ]; then cat "$here/spaces$page.json"; else echo '{"spaces": [], "page": {"next": ""}}'; fi;;
   *)
     printf '\n  ✗ unknown command: %s\n\n' "$*" >&2; exit 1;;
 esac
@@ -190,19 +193,18 @@ impl Fake {
         self.status(&format!("{{\n  \"pro\": true,\n  \"enabled\": {on}\n}}\n"));
     }
 
-    /// A page this session published: in `list` (today's bare array), with its versions saying who pushed it.
+    /// A page this session published: in `spaces list`, with its versions saying who pushed it.
     pub fn published(&self, session: &str) {
-        let file = self.file("spaces.json");
-        let mut spaces: Vec<Value> =
-            std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-        let id = format!("page-{session}");
-        let at = format!("{}.000Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
-        spaces.push(json!({"id": id, "updated_at": at, "title": "a page"}));
-        let versions = json!({"versions": [{"id": "c1", "created_at": at, "client": {"session_id": session}}], "page": {"next": ""}});
-        std::fs::write(self.file(&format!("versions.{id}.json")), versions.to_string()).unwrap();
-        let tmp = self.file("spaces.json.tmp");
-        std::fs::write(&tmp, Value::Array(spaces).to_string()).unwrap();
-        std::fs::rename(tmp, file).unwrap();
+        self.published_new_api(session);
+    }
+
+    /// The first page of `spaces list`'s rows so far.
+    fn space_rows(&self) -> Vec<Value> {
+        std::fs::read_to_string(self.file("spaces.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v["spaces"].as_array().cloned())
+            .unwrap_or_default()
     }
 
     /// The account's one page, as Spacesheep's new API answers: `list` is `{spaces, page}`, and the versions are newest
@@ -215,9 +217,10 @@ impl Fake {
             {"id": "c1", "created_at": at, "client": {"name": "claude-code", "session_id": session}}],
             "page": {"next": ""}});
         std::fs::write(self.file(&format!("versions.{id}.json")), versions.to_string()).unwrap();
-        let spaces = json!({"spaces": [{"id": id, "name": "@james/a-page", "updated_at": at}], "page": {"next": ""}});
+        let mut rows = self.space_rows();
+        rows.push(json!({"id": id, "name": "@james/a-page", "updated_at": at}));
         let tmp = self.file("spaces.json.tmp");
-        std::fs::write(&tmp, spaces.to_string()).unwrap();
+        std::fs::write(&tmp, json!({"spaces": rows, "page": {"next": ""}}).to_string()).unwrap();
         std::fs::rename(tmp, self.file("spaces.json")).unwrap();
     }
 
@@ -245,9 +248,22 @@ impl Fake {
         std::fs::rename(tmp, self.file(&format!("versions.page-{session}.after-{after}.json"))).unwrap();
     }
 
-    /// Every `versions list` call prints this on stdout and exits 1: ErrorInfo, as `--json` does for a 401 or a 500.
-    pub fn new_calls_refuse(&self, error_info: &str) {
+    /// Every `spaces list` call prints this on stdout and exits 1: ErrorInfo, as `--json` does for a 401 or a 500.
+    pub fn spaces_refuse(&self, error_info: &str) {
         std::fs::write(self.file("new-fail"), error_info).unwrap();
+    }
+
+    /// Every `versions list` call does.
+    pub fn versions_refuse(&self, error_info: &str) {
+        std::fs::write(self.file("versions-fail"), error_info).unwrap();
+    }
+
+    /// `spaces list`'s page after `after` ("" for the first), naming the account's pages `ids` (each changed now) and `next`.
+    pub fn spaces_page(&self, after: &str, ids: &[&str], next: &str) {
+        let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
+        let rows: Vec<Value> = ids.iter().map(|id| json!({"id": id, "updated_at": at})).collect();
+        let name = if after.is_empty() { "spaces.json".to_string() } else { format!("spaces.after-{after}.json") };
+        std::fs::write(self.file(&name), json!({"spaces": rows, "page": {"next": next}}).to_string()).unwrap();
     }
 
     /// `versions list`'s one page for `space`: this session's version, the last page.
@@ -260,11 +276,11 @@ impl Fake {
     /// Only these sessions' pages in `list`, as when newer pages have pushed the others out of the account's latest.
     pub fn listed_only(&self, sessions: &[&str]) {
         let file = self.file("spaces.json");
-        let spaces: Vec<Value> =
-            std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let spaces = self.space_rows();
         let keep = |s: &Value| sessions.iter().any(|x| s["id"] == format!("page-{x}"));
         let tmp = self.file("spaces.json.tmp");
-        std::fs::write(&tmp, Value::Array(spaces.into_iter().filter(keep).collect()).to_string()).unwrap();
+        let kept: Vec<Value> = spaces.into_iter().filter(keep).collect();
+        std::fs::write(&tmp, json!({"spaces": kept, "page": {"next": ""}}).to_string()).unwrap();
         std::fs::rename(tmp, file).unwrap();
     }
 

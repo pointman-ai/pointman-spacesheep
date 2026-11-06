@@ -42,10 +42,10 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   minute (`talk status`). Nothing listens while it's off, and the extension never turns it on (`talk on`). It has
   no settings of its own (James, thread 6914 [16235]: no list of agents).
 - **Who's listened for:** each agent here whose current session published a page. Every 5 minutes, while Talk is
-  on, it reads the account's latest pages (`spacesheep list --json`) and, for each new or changed one, who pushed
+  on, it reads every page of the account's spaces (`spacesheep spaces list --json --limit=200`, then `--after=<page.next>` until it's empty) and, for each new or changed one, who pushed
   its versions (`versions list --space-id <page> --json --limit=200`, then `--after=<page.next>` until it's empty: each version's
   `client.session_id`; an empty or missing one is another account's version), kept in the state folder
-  (`pages.json`). That list is the latest 50, so a page that leaves it is kept for 30 days from its last change,
+  (`pages.json`). A page that leaves the list is kept for 30 days from its last change,
   up to 500 pages: a burst of other pages (core's docs job updates dozens at once) doesn't silence it. Every 60 s it reads the node's agents (`agents.sessions`), and for each publisher with a thread
   it runs `spacesheep talk listen --session <id>` (the machine's `spacesheep`, else `npx -y spacesheep@latest`),
   signed in with the machine's own key in `~/.config/spacesheep`. With npx, it asks npx where its copy of
