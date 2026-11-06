@@ -1,6 +1,5 @@
 //! Which sessions published a page: a page's Session tab talks to the session that deployed it, and every deploy
-//! records its session (`spacesheep versions <space> --json`: each version's `client.session_id`, or today's
-//! `pushed_by.session_id`). The spaces come from `spacesheep list --json` (the account's latest, with `id` and
+//! records its session (`spacesheep versions list --space-id <id> --json`: each version's `client.session_id`). The spaces come from `spacesheep list --json` (the account's latest, with `id` and
 //! `updated_at`: a bare array today, `{spaces, page}` from the new API), so a page's versions are read
 //! again only when it has changed. That list is only the latest 50, so a page that leaves it is kept a while: it
 //! hasn't changed since, so who published it still holds (EXT-75).
@@ -60,21 +59,16 @@ pub fn versions_page(text: &str) -> Option<(Vec<Value>, Option<String>)> {
 /// The sessions that pushed a page's versions (every page of `versions <space> --json`, in the order read), the
 /// first version's first, each once with when its first version was pushed (`created_at`, "" when it's not given).
 ///
-/// Two shapes: today's numbers each version and names its session in `pushed_by.session_id`. Spacesheep's new API
-/// (ListVersions) lists them newest first with no number, and names it in `client.session_id`, read first. Either
-/// is set only on the reading key's own account's versions, so an empty one is someone else's and is skipped.
+/// The versions are Spacesheep's new API's (ListVersions), newest first, and name their session in
+/// `client.session_id` only. It is set only on the reading key's own account's versions, so a missing or empty one is
+/// someone else's and is skipped; no owner is inferred from any other field (`pushed_by` is not read).
 pub fn sessions(versions: &[Value]) -> Vec<(String, String)> {
-    let mut versions: Vec<&Value> = versions.iter().collect();
-    if versions.iter().any(|x| x["number"].is_i64()) {
-        versions.sort_by_key(|x| x["number"].as_i64().unwrap_or(i64::MAX));
-    } else {
-        versions.reverse();
-        versions.sort_by_key(|x| x["created_at"].as_str().and_then(secs).unwrap_or(i64::MAX));
-    }
+    // newest first as read: oldest first, by when each was created (a stable sort keeps the read order for a tie)
+    let mut versions: Vec<&Value> = versions.iter().rev().collect();
+    versions.sort_by_key(|x| x["created_at"].as_str().and_then(secs).unwrap_or(i64::MAX));
     let mut out: Vec<(String, String)> = Vec::new();
     for x in versions {
-        let named = [&x["client"]["session_id"], &x["pushed_by"]["session_id"]];
-        let Some(s) = named.into_iter().filter_map(Value::as_str).find(|s| !s.is_empty()) else { continue };
+        let Some(s) = x["client"]["session_id"].as_str().filter(|s| !s.is_empty()) else { continue };
         if !out.iter().any(|(o, _)| o == s) {
             out.push((s.to_string(), x["created_at"].as_str().unwrap_or("").to_string()));
         }
@@ -295,14 +289,6 @@ mod tests {
         let got = spaces(list).unwrap();
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["p1", "p2"]);
         assert_eq!(spaces("not json"), None);
-        let versions = r#"{"space": {"uuid": "p1"}, "versions": [
-            {"number": 3, "created_at": "2026-11-04T09:00:00.000Z", "pushed_by": {"session_id": "s-1"}},
-            {"number": 2, "created_at": "2026-11-04T08:06:16.089Z", "pushed_by": {"label": "Claude Code", "session_id": "s-2"}},
-            {"number": 1, "created_at": "2026-11-04T08:05:08.589Z", "pushed_by": {"label": "Claude Code", "session_id": "s-1"}},
-            {"number": 0, "via": "web"}]}"#;
-        let got = read(versions);
-        let want = [("s-1", "2026-11-04T08:05:08.589Z"), ("s-2", "2026-11-04T08:06:16.089Z")];
-        assert_eq!(got, want.map(|(s, at)| (s.to_string(), at.to_string())), "the first version's first, at its first");
         assert_eq!(versions_page("{}"), None);
     }
 
@@ -365,13 +351,14 @@ mod tests {
     }
 
     #[test]
-    fn client_session_is_read_first_and_an_empty_one_falls_back_to_pushed_by() {
+    fn only_client_session_names_a_publisher_and_a_legacy_only_row_stays_unassigned() {
         let versions = r#"{"versions": [
-            {"number": 2, "client": {"session_id": "s-new"}, "pushed_by": {"session_id": "s-old"}},
-            {"number": 1, "client": {"session_id": ""}, "pushed_by": {"session_id": "s-3"}},
-            {"number": 3, "pushed_by": {"session_id": ""}}]}"#;
+            {"id": "c4", "created_at": "2026-11-04T09:00:00Z", "client": {"session_id": "s-new"}, "pushed_by": {"session_id": "s-old"}},
+            {"id": "c3", "created_at": "2026-11-04T08:30:00Z", "client": {"session_id": ""}, "pushed_by": {"session_id": "s-3"}},
+            {"number": 2, "created_at": "2026-11-04T08:20:00Z", "pushed_by": {"session_id": "s-4"}},
+            {"id": "c1", "created_at": "2026-11-04T08:10:00Z", "client": {"transport": "mcp"}}], "page": {"next": ""}}"#;
         let got: Vec<String> = read(versions).into_iter().map(|(s, _)| s).collect();
-        assert_eq!(got, ["s-3", "s-new"], "an empty session is someone else's: skipped");
+        assert_eq!(got, ["s-new"], "an empty or missing client session is someone else's: no owner from pushed_by");
     }
 
     fn who(sessions: &[&str]) -> Vec<(String, String)> {
