@@ -44,6 +44,15 @@ pub fn versions_page(text: &str) -> Option<(Vec<Value>, Option<String>)> {
     Some((versions, next))
 }
 
+/// One answer of `spaces list --json`: its spaces, and the cursor to the next page (`page.next`, empty on the last).
+/// None if it isn't one: unlike today's `list`, a bare array is not one.
+pub fn spaces_page(text: &str) -> Option<(Vec<Space>, Option<String>)> {
+    let v: Value = serde_json::from_str(text.trim()).ok()?;
+    v["spaces"].as_array()?;
+    let next = v["page"]["next"].as_str().filter(|n| !n.is_empty()).map(str::to_string);
+    Some((spaces(text)?, next))
+}
+
 /// The sessions that pushed a page's versions (every page of `versions <space> --json`, in the order read), the
 /// first version's first, each once with when its first version was pushed (`created_at`, "" when it's not given).
 ///

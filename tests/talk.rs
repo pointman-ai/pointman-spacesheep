@@ -168,7 +168,7 @@ fn a_page_published_through_the_new_api_is_listened_for() {
 
 /// The `versions` calls the fake has had.
 fn version_reads(fake: &Fake) -> Vec<String> {
-    fake.calls().into_iter().filter(|c| c.starts_with("versions ")).collect()
+    fake.calls().into_iter().filter(|c| c.starts_with("versions ") && !c.ends_with("--help")).collect()
 }
 
 #[test]
@@ -306,7 +306,10 @@ fn talk_off_for_the_account_means_no_listeners() {
 
     std::thread::sleep(Duration::from_secs(3)); // three looks' worth
     let calls = fake.calls();
-    assert!(!calls.is_empty() && calls.iter().all(|c| c == "talk status"), "only the switch is read: {calls:?}");
+    assert!(
+        !calls.is_empty() && calls.iter().all(|c| c == "talk status" || c == "--version"),
+        "only the switch is read: {calls:?}"
+    );
     assert!(node.asked().iter().all(|(m, _)| m != "agents.sessions"), "{:?}", node.asked());
     assert!(board.posts().is_empty());
     let health = node.call("health.check", json!({})).unwrap();
@@ -614,4 +617,74 @@ fn a_page_discovered_after_its_publishing_session_ends_still_reaches_the_current
     assert_eq!(posts.len(), 1, "{}", node.log());
     assert_eq!(posts[0]["thread_id"], 42);
     assert!(posts[0]["text"].as_str().unwrap().starts_with("@scene"));
+}
+
+fn calls_starting(fake: &Fake, word: &str) -> Vec<String> {
+    fake.calls().into_iter().filter(|c| c.starts_with(word) && !c.ends_with("--help")).collect()
+}
+
+#[test]
+fn where_the_server_names_the_new_commands_every_page_of_spaces_and_versions_is_read_with_them() {
+    // the account has more pages than one answer holds: this session's is on the second (EXT-141)
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.serves_new_commands();
+    fake.spaces_page("", &["page-other"], "c1");
+    fake.spaces_page("c1", &["page-s-1"], "");
+    fake.versions_of("page-other", "s-other");
+    fake.versions_of("page-s-1", "s-1");
+    fake.prints("s-1", &format!("{MESSAGE}\n"));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
+    assert_eq!(got[0]["thread_id"], 41);
+    assert_eq!(
+        calls_starting(&fake, "spaces "),
+        ["spaces list --json --limit=200", "spaces list --json --limit=200 --after=c1"],
+        "the second page from the first's page.next, then no more"
+    );
+    assert!(calls_starting(&fake, "list ").is_empty(), "today's list isn't run: {:?}", fake.calls());
+    assert_eq!(
+        calls_starting(&fake, "versions "),
+        [
+            "versions list --space-id page-other --json --limit=200",
+            "versions list --space-id page-s-1 --json --limit=200"
+        ]
+    );
+}
+
+#[test]
+fn a_new_command_that_fails_is_said_with_its_error_info_and_never_read_as_absent() {
+    // a 401, a 500, a timeout or an answer that doesn't parse says nothing about whether the command is served:
+    // today's `list` isn't run in its place
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.serves_new_commands();
+    fake.new_calls_refuse(r#"{"code":"unauthenticated","message":"that key is not accepted","violations":[]}"#);
+    fake.prints("s-1", &format!("{MESSAGE}\n"));
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    let said = "`spacesheep spaces list` failed: unauthenticated: that key is not accepted";
+    assert!(wait(WITHIN, || node.log().contains(said)), "{:?}\n{}", fake.calls(), node.log());
+    assert!(calls_starting(&fake, "list ").is_empty(), "no fallback after a refusal: {:?}", fake.calls());
+    assert_eq!(fake.listens("s-1"), 0);
+}
+
+#[test]
+fn a_spaces_answer_that_is_not_the_new_shape_fails_the_read() {
+    // a bare array is today's `list`, not `spaces list`
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.serves_new_commands();
+    std::fs::write(fake.dir.path().join("spaces.new.json"), "[]").unwrap();
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+    assert!(
+        wait(WITHIN, || node.log().contains("`spacesheep spaces list` said")),
+        "{:?}\n{}",
+        fake.calls(),
+        node.log()
+    );
+    assert!(calls_starting(&fake, "list ").is_empty(), "{:?}", fake.calls());
 }

@@ -74,6 +74,20 @@ case "$1 $2" in
       printf '\n  ✗ could not check %s: fetch failed\n\n' "$key" >&2; exit 1
     fi
     cat > "$here/saved";;
+  "spaces list"|"versions list")
+    if [ "$3" = --help ]; then
+      if [ -f "$here/new-api" ]; then printf '\n  %s %s [--limit N] [--after CURSOR]\n\n' "$1" "$2"; else printf '\n  spacesheep 1.36.0 — publish web pages to spacesheep.dev from a terminal or CI\n\n  Usage\n    spacesheep login\n'; fi
+      exit 0
+    fi
+    page=""; space=""; prev=""
+    for a in "$@"; do
+      case "$a" in --after=*) page=".after-${a#--after=}";; esac
+      if [ "$prev" = --space-id ]; then space="$a"; fi
+      prev="$a"
+    done
+    if [ -f "$here/new-fail" ]; then cat "$here/new-fail"; exit 1; fi
+    if [ "$1" = spaces ]; then f="$here/spaces.new$page.json"; else f="$here/versions.$space$page.json"; fi
+    if [ -f "$f" ]; then cat "$f"; else printf '{"code":"not_found","message":"no such page of results"}\n'; exit 1; fi;;
   "list --json")
     if [ -f "$here/spaces.json" ]; then cat "$here/spaces.json"; else echo '[]'; fi;;
   "versions "*)
@@ -141,7 +155,13 @@ impl Fake {
 
     /// The node's PATH: the fake first, then only the system's folders.
     pub fn path_var(&self) -> String {
-        format!("{}:/usr/bin:/bin", self.dir.path().display())
+        // NixOS keeps coreutils (dirname, grep, sleep …, which the fake script uses) in its system profile, not /usr/bin
+        let nixos = if std::path::Path::new("/run/current-system/sw/bin/dirname").exists() {
+            ":/run/current-system/sw/bin"
+        } else {
+            ""
+        };
+        format!("{}:/usr/bin:/bin{nixos}", self.dir.path().display())
     }
 
     /// What every run of `talk listen` for this session prints first.
@@ -231,6 +251,32 @@ impl Fake {
         let tmp = self.file(&format!("versions.{session}.{after}.tmp"));
         std::fs::write(&tmp, older.to_string()).unwrap();
         std::fs::rename(tmp, self.file(&format!("versions.page-{session}.after-{after}.json"))).unwrap();
+    }
+
+    /// The server's table names `spaces list` and `versions list` (their `--help` shows the command, not the CLI's own).
+    pub fn serves_new_commands(&self) {
+        std::fs::write(self.file("new-api"), "").unwrap();
+    }
+
+    /// Every new call prints this on stdout and exits 1: ErrorInfo, as `--json` does for a 401 or a 500.
+    pub fn new_calls_refuse(&self, error_info: &str) {
+        std::fs::write(self.file("new-fail"), error_info).unwrap();
+    }
+
+    /// `spaces list`'s page after `after` ("" for the first), naming the account's pages `ids` (each changed now) and `next`.
+    pub fn spaces_page(&self, after: &str, ids: &[&str], next: &str) {
+        let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
+        let rows: Vec<Value> = ids.iter().map(|id| json!({"id": id, "updated_at": at})).collect();
+        let name =
+            if after.is_empty() { "spaces.new.json".to_string() } else { format!("spaces.new.after-{after}.json") };
+        std::fs::write(self.file(&name), json!({"spaces": rows, "page": {"next": next}}).to_string()).unwrap();
+    }
+
+    /// `versions list`'s one page for `space`: this session's version, the last page.
+    pub fn versions_of(&self, space: &str, session: &str) {
+        let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
+        let v = json!({"versions": [{"id": "c1", "created_at": at, "client": {"session_id": session}}], "page": {"next": ""}});
+        std::fs::write(self.file(&format!("versions.{space}.json")), v.to_string()).unwrap();
     }
 
     /// Only these sessions' pages in `list`, as when newer pages have pushed the others out of the account's latest.
@@ -358,6 +404,10 @@ pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn 
         .binary(env!("CARGO_BIN_EXE_spacesheep"))
         .settings(settings)
         .env("PATH", path_var)
+        // nothing of the machine's own Spacesheep sign-in or origin reaches a test: its HOME and config are the fake's folder
+        .env("HOME", path_var.split(':').next().unwrap_or("/nonexistent"))
+        .env("SPACESHEEP_CONFIG_DIR", path_var.split(':').next().unwrap_or("/nonexistent"))
+        .env("SPACESHEEP_ORIGIN", "http://127.0.0.1:9")
         .env("POINTMAN_SPACESHEEP_FASTER", FASTER)
         .method("agents.sessions", move |_| Ok(json!({"agents": *agents.lock().unwrap()})))
         .on(move |post: BoardPostRequest| {

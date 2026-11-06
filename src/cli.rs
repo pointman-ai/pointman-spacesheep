@@ -265,6 +265,43 @@ pub fn answers_named(help: &Ran) -> bool {
     help.stdout.contains("--to MESSAGE_ID") || help.stderr.contains("--to MESSAGE_ID")
 }
 
+/// What the CLI's help prints when it doesn't know a command word (it shows its own top-level usage and exits 0).
+const NO_SUCH_COMMAND: &str = "publish web pages to spacesheep.dev";
+
+/// Whether the server's table names this command (`spaces list`), which is what the CLI's own help says: the
+/// command's usage when it's there, its top-level usage when it isn't. Only that decides: a run that can't be made or
+/// that doesn't answer is an error, never "absent", so a server having trouble is not read as one without the call.
+pub fn serves(cli: &Cli, command: &[&str], timeout: Duration) -> Result<bool, String> {
+    let mut args = command.to_vec();
+    args.push("--help");
+    let ran = run(cli, &args, timeout).map_err(|e| e.to_string())?;
+    match ran.code {
+        Some(0) if ran.stdout.contains(NO_SUCH_COMMAND) => Ok(false),
+        Some(0) => Ok(true),
+        _ => Err(format!("`spacesheep {} --help` failed: {}", command.join(" "), last_words(&ran.stderr))),
+    }
+}
+
+/// A failed run's reason: the ErrorInfo the new commands print on stdout with `--json` (`{code, message}`, exit 1,
+/// also for a 401), else the CLI's own error on stderr.
+pub fn refusal(ran: &Ran) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(ran.stdout.trim()) {
+        let e = if v["error"].is_object() { &v["error"] } else { &v };
+        if let Some(m) = e["message"].as_str().filter(|m| !m.is_empty()) {
+            return match e["code"].as_str() {
+                Some(c) if !c.is_empty() => format!("{c}: {m}"),
+                _ => m.to_string(),
+            };
+        }
+    }
+    let said = last_words(&ran.stderr);
+    if said.is_empty() {
+        format!("exit {}", ran.code.map(|c| c.to_string()).unwrap_or_else(|| "by a signal".into()))
+    } else {
+        said
+    }
+}
+
 /// What a CLI said on stderr worth repeating, clipped: its error (`✗ not signed in — …`), else its last line. npx's
 /// own notices (`npm notice …`, `npm warn …`) come after it, so they're never it.
 pub fn last_words(stderr: &str) -> String {

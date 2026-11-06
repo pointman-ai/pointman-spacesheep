@@ -1099,17 +1099,17 @@ fn publishers(
     file: &std::path::Path,
     seen: &Seen,
 ) -> Result<(Vec<String>, BTreeMap<String, i64>), String> {
-    let ran = cli::run(cli, &["list", "--json"], PAGES_TIMEOUT).map_err(|e| e.to_string())?;
-    let list = match ran.code {
-        Some(0) => pages::spaces(&ran.stdout)
-            .ok_or_else(|| format!("`spacesheep list` said {:?}", cli::last_words(&ran.stdout)))?,
-        _ => return Err(format!("`spacesheep list` failed: {}", ran.stderr)),
-    };
+    // Where the server's table names `spaces list` and `versions list`, every page of them is read; where it names
+    // neither, today's `list` and `versions` (the latest 50). Only the CLI's own answer to --help decides, never a
+    // refusal, a timeout or an answer that doesn't parse (EXT-141).
+    let new = cli::serves(cli, &["spaces", "list"], STATUS_TIMEOUT)?
+        && cli::serves(cli, &["versions", "list"], STATUS_TIMEOUT)?;
+    let list = spaces(cli, new)?;
     let mut known = Known::from_json(&std::fs::read_to_string(file).unwrap_or_default());
     known.keep(&list, now() as i64);
     let stale: Vec<&pages::Space> = list.iter().filter(|s| known.stale(s)).collect();
     for space in stale {
-        match versions(cli, &space.id) {
+        match versions(cli, &space.id, new) {
             Ok(got) => known.read(space, pages::sessions(&got)),
             Err(why) => h.log(format!("couldn't read who published page {}: {why}", space.id)),
         }
@@ -1121,21 +1121,60 @@ fn publishers(
     Ok((known.publishers(), known.threads()))
 }
 
+/// The account's pages: with the new `spaces list`, every page of them (`--limit=200`, then `--after` each answer's
+/// `page.next` until it's empty, failing as `versions` does); else today's `list --json`, the latest 50.
+fn spaces(cli: &Cli, new: bool) -> Result<Vec<pages::Space>, String> {
+    if !new {
+        let ran = cli::run(cli, &["list", "--json"], PAGES_TIMEOUT).map_err(|e| e.to_string())?;
+        return match ran.code {
+            Some(0) => pages::spaces(&ran.stdout)
+                .ok_or_else(|| format!("`spacesheep list` said {:?}", cli::last_words(&ran.stdout))),
+            _ => Err(format!("`spacesheep list` failed: {}", cli::refusal(&ran))),
+        };
+    }
+    let mut all = Vec::new();
+    let mut after: Option<String> = None;
+    for _ in 0..VERSION_CALLS {
+        let cursor = after.as_ref().map(|c| format!("--after={c}"));
+        let mut args = vec!["spaces", "list", "--json", VERSIONS_LIMIT];
+        args.extend(cursor.as_deref());
+        let ran = cli::run(cli, &args, PAGES_TIMEOUT).map_err(|e| e.to_string())?;
+        if ran.code != Some(0) {
+            return Err(format!("`spacesheep spaces list` failed: {}", cli::refusal(&ran)));
+        }
+        let (got, next) = pages::spaces_page(&ran.stdout)
+            .ok_or_else(|| format!("`spacesheep spaces list` said {:?}", cli::last_words(&ran.stdout)))?;
+        all.extend(got);
+        match next {
+            None => return Ok(all),
+            Some(next) if after.as_ref() == Some(&next) => {
+                return Err(format!("the next page of spaces is the one just read ({next})"));
+            }
+            Some(next) => after = Some(next),
+        }
+    }
+    Err(format!("the spaces don't end within {VERSION_CALLS} calls"))
+}
+
 /// A page's versions, every page of them, newest first: `versions <space> --json`, then again `--after` each
 /// answer's `page.next` until it's empty (the new API's; CLI 1.35 ignores both flags and answers with no `page`, so
 /// it's one call). Anything short of the last page fails the read: a call that fails, a cursor that doesn't move, or
 /// VERSION_CALLS calls. What's known of the page then stays as it was and it's read again next time: sessions from
 /// part of its history would be kept as all of it until the page changed, and could pin it to a later session's thread.
-fn versions(cli: &Cli, space: &str) -> Result<Vec<Value>, String> {
+fn versions(cli: &Cli, space: &str, new: bool) -> Result<Vec<Value>, String> {
     let mut all = Vec::new();
     let mut after: Option<String> = None;
     for _ in 0..VERSION_CALLS {
         let cursor = after.as_ref().map(|c| format!("--after={c}"));
-        let mut args = vec!["versions", space, "--json", VERSIONS_LIMIT];
+        let mut args = if new {
+            vec!["versions", "list", "--space-id", space, "--json", VERSIONS_LIMIT]
+        } else {
+            vec!["versions", space, "--json", VERSIONS_LIMIT]
+        };
         args.extend(cursor.as_deref());
         let ran = cli::run(cli, &args, PAGES_TIMEOUT).map_err(|e| e.to_string())?;
         if ran.code != Some(0) {
-            return Err(ran.stderr);
+            return Err(cli::refusal(&ran));
         }
         let (got, next) = pages::versions_page(&ran.stdout)
             .ok_or_else(|| format!("`spacesheep versions` said {:?}", cli::last_words(&ran.stdout)))?;
