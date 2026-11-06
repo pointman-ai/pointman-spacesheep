@@ -688,3 +688,40 @@ fn a_spaces_answer_that_is_not_the_new_shape_fails_the_read() {
     );
     assert!(calls_starting(&fake, "list ").is_empty(), "{:?}", fake.calls());
 }
+
+#[test]
+fn a_malformed_versions_cursor_fails_the_read_and_never_ends_the_history() {
+    // `page.next: 123` is no last page: the sessions of part of the history would be kept as all of it
+    for new in [false, true] {
+        let board = Board::with(vec![agent("scene", "s-1", 41)]);
+        let fake = Fake::new();
+        if new {
+            fake.serves_new_commands();
+            fake.spaces_page("", &["page-s-1"], "");
+        }
+        fake.published_in_two_pages("s-1", "");
+        let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
+        let bad = json!({"versions": [{"id": "c2", "created_at": at, "client": {"session_id": "s-1"}}], "page": {"next": 123}});
+        std::fs::write(fake.dir.path().join("versions.page-s-1.json"), bad.to_string()).unwrap();
+        let node = spacesheep(&fake, &board, on()).start().unwrap();
+
+        let why = "couldn't read who published page page-s-1: `spacesheep versions` said";
+        assert!(wait(WITHIN, || node.log().contains(why)), "new={new}: {:?}\n{}", fake.calls(), node.log());
+        assert_eq!(fake.listens("s-1"), 0, "new={new}: {:?}", fake.calls());
+    }
+}
+
+#[test]
+fn a_malformed_spaces_cursor_fails_the_read() {
+    let board = Board::with(vec![agent("scene", "s-1", 41)]);
+    let fake = Fake::new();
+    fake.serves_new_commands();
+    std::fs::write(fake.dir.path().join("spaces.new.json"), r#"{"spaces": [], "page": {"next": 7}}"#).unwrap();
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    assert!(
+        wait(WITHIN, || node.log().contains("`spacesheep spaces list` said")),
+        "{:?}\n{}",
+        fake.calls(),
+        node.log()
+    );
+}

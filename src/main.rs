@@ -1176,7 +1176,7 @@ fn versions(cli: &Cli, space: &str, new: bool) -> Result<Vec<Value>, String> {
         if ran.code != Some(0) {
             return Err(cli::refusal(&ran));
         }
-        let (got, next) = pages::versions_page(&ran.stdout)
+        let (got, next) = pages::versions_page(&ran.stdout, new)
             .ok_or_else(|| format!("`spacesheep versions` said {:?}", cli::last_words(&ran.stdout)))?;
         all.extend(got);
         match next {
