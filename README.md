@@ -34,7 +34,7 @@ pointman add spacesheep
 
 Spacesheep's Session tab messages the coding session that published a page: each deploy records the session that
 ran it (`$CLAUDE_CODE_SESSION_ID`). The node knows each agent's session, so the extension listens for it with
-Spacesheep's own CLI, as it is (1.26), and nothing goes into `~/.claude`: no hooks, no `machine on`, no
+Spacesheep's own CLI (1.36: `talk` is unchanged since 1.26), and nothing goes into `~/.claude`: no hooks, no `machine on`, no
 sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the-pointman-node (Pointman thread
 6914).
 
