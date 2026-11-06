@@ -97,10 +97,8 @@ fn serve(mut conn: TcpStream, old: bool, log: Arc<Mutex<Vec<Seen>>>) {
     let first = lines.next().unwrap_or("");
     let mut parts = first.split(' ');
     let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-    let headers: HashMap<String, String> = lines
-        .filter_map(|l| l.split_once(": "))
-        .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))
-        .collect();
+    let headers: HashMap<String, String> =
+        lines.filter_map(|l| l.split_once(": ")).map(|(k, v)| (k.to_ascii_lowercase(), v.to_string())).collect();
     let (path, q) = target.split_once('?').unwrap_or((target, ""));
     let query: Vec<(String, String)> = q
         .split('&')
@@ -214,7 +212,8 @@ fn run(c: &(PathBuf, PathBuf), server: &StandIn, key: Option<&str>, args: &[&str
 }
 
 fn json_of(o: &Out) -> Value {
-    serde_json::from_str(&o.stdout).unwrap_or_else(|e| panic!("stdout isn't JSON ({e}): {:?}\nstderr: {}", o.stdout, o.stderr))
+    serde_json::from_str(&o.stdout)
+        .unwrap_or_else(|e| panic!("stdout isn't JSON ({e}): {:?}\nstderr: {}", o.stdout, o.stderr))
 }
 
 fn query(s: &Seen) -> Vec<(&str, &str)> {
@@ -281,7 +280,12 @@ fn versions_list_space_id_goes_in_the_path_and_not_the_query() {
     assert_eq!(body["versions"][0]["client"]["transport"], "cli");
     assert_eq!(body["page"]["next"], "1");
 
-    let last = run(&c, &server, Some(KEY), &["versions", "list", "--space-id", FIRST_SPACE, "--json", "--limit", "1", "--after", "1"]);
+    let last = run(
+        &c,
+        &server,
+        Some(KEY),
+        &["versions", "list", "--space-id", FIRST_SPACE, "--json", "--limit", "1", "--after", "1"],
+    );
     assert_eq!(last.code, 0, "{}", last.stderr);
     let body = json_of(&last);
     assert_eq!(body["versions"][0]["id"], "bbbbbbbbbbbb");
@@ -402,4 +406,35 @@ fn an_old_server_without_a_doors_table_has_no_new_commands() {
     let o = run(&c, &server, Some(KEY), &["versions", "list", "--space-id", FIRST_SPACE, "--json"]);
     assert_ne!(o.code, 0, "{}{}", o.stdout, o.stderr);
     assert!(server.calls().iter().all(|s| !s.path.starts_with("/v1/spaces")), "{:?}", server.calls());
+}
+
+#[test]
+fn on_an_old_server_help_for_a_new_command_is_top_level_help_exit_1_for_spaces_and_0_for_versions() {
+    // What an adapter probing `spaces list --help` meets when the doors table is absent (404): not the command's
+    // help, not exit 0. A probe must read exit 1 plus this help as "not served"; no /v1 call is made for it.
+    let Some(c) = cli() else { return };
+    let server = StandIn::start(true);
+    // `spaces` is no command of the CLI's own: exit 1. `versions` is (the old `versions <space>`): the same top-level
+    // help at exit 0. So the exit status alone cannot say "not served"; the help text is the same either way.
+    for (args, code) in [(&["spaces", "list", "--help"][..], 1), (&["versions", "list", "--help"][..], 0)] {
+        let o = run(&c, &server, Some(KEY), args);
+        assert_eq!(o.code, code, "{args:?}: {}{}", o.stdout, o.stderr);
+        let all = format!("{}{}", o.stdout, o.stderr);
+        assert!(all.contains("spacesheep 1.36.0 — publish web pages"), "{args:?}: {all}");
+        assert!(!all.contains("--space-id") && !all.contains("--after"), "{args:?}: {all}");
+    }
+    assert!(server.calls().iter().all(|s| !s.path.starts_with("/v1/spaces")), "{:?}", server.calls());
+}
+
+#[test]
+fn on_a_server_with_the_table_help_for_the_new_command_is_its_own_help_with_exit_0() {
+    let Some(c) = cli() else { return };
+    let server = StandIn::start(false);
+    let o = run(&c, &server, None, &["spaces", "list", "--help"]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert!(o.stdout.contains("spacesheep spaces list") && o.stdout.contains("--after"), "{}", o.stdout);
+    let o = run(&c, &server, None, &["versions", "list", "--help"]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert!(o.stdout.contains("--space-id"), "{}", o.stdout);
+    assert!(server.calls().is_empty());
 }
