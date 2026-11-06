@@ -265,28 +265,6 @@ pub fn answers_named(help: &Ran) -> bool {
     help.stdout.contains("--to MESSAGE_ID") || help.stderr.contains("--to MESSAGE_ID")
 }
 
-/// What the CLI's help prints when it doesn't know a command word (it shows its own top-level usage, at exit 0 or 1).
-const NO_SUCH_COMMAND: &str = "publish web pages to spacesheep.dev";
-
-/// Whether the server's table names this command (`spaces list`), which is what the CLI's own help says: the
-/// command's usage when it's there, its top-level usage when it isn't. Only that decides: a run that can't be made or
-/// that doesn't answer is an error, never "absent", so a server having trouble is not read as one without the call.
-pub fn serves(cli: &Cli, command: &[&str], timeout: Duration) -> Result<bool, String> {
-    let mut args = command.to_vec();
-    args.push("--help");
-    let ran = run(cli, &args, timeout).map_err(|e| e.to_string())?;
-    // The top-level help is the CLI's answer for a command it doesn't know, at whatever exit status it gives: 1 for
-    // `spaces list` (no such command), 0 for `versions list` (the old `versions <space>` takes it). Only that text says
-    // "absent"; other failures, which print none of it, stay errors.
-    if ran.stdout.contains(NO_SUCH_COMMAND) && matches!(ran.code, Some(0 | 1)) {
-        return Ok(false);
-    }
-    match ran.code {
-        Some(0) => Ok(true),
-        _ => Err(format!("`spacesheep {} --help` failed: {}", command.join(" "), last_words(&ran.stderr))),
-    }
-}
-
 /// A failed run's reason: the ErrorInfo the new commands print on stdout with `--json` (`{code, message}`, exit 1,
 /// also for a 401), else the CLI's own error on stderr.
 pub fn refusal(ran: &Ran) -> String {
@@ -402,80 +380,5 @@ mod tests {
         assert!(copy.describe().starts_with("npx's spacesheep@latest (1.35.0) at "), "{}", copy.describe());
         std::fs::remove_file(&script).unwrap();
         assert!(!copy.there(), "npm's cache cleaned");
-    }
-
-    /// `serves()` against spacesheep 1.36.0 itself and an old server (every path a 404, so no doors table): `spaces
-    /// list --help` is the top-level help at exit 1, `versions list --help` the same at exit 0, and both are "not
-    /// served". Runs when SPACESHEEP_CLI_1_36 is the CLI's bin/spacesheep.js and node is on the PATH (CI sets it).
-    #[test]
-    fn an_old_server_serves_neither_command_whatever_the_helps_exit_status() {
-        use std::io::{Read, Write};
-        let Some(script) = std::env::var_os("SPACESHEEP_CLI_1_36") else {
-            eprintln!("skipped: set SPACESHEEP_CLI_1_36 to spacesheep 1.36.0's bin/spacesheep.js");
-            return;
-        };
-        let node = std::env::var_os("SPACESHEEP_NODE").map(PathBuf::from).unwrap_or_else(|| {
-            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-                .map(|d| d.join("node"))
-                .find(|p| p.is_file())
-                .expect("node on the PATH, or SPACESHEEP_NODE")
-        });
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        std::thread::spawn(move || {
-            for mut conn in listener.incoming().flatten() {
-                std::thread::spawn(move || {
-                    let mut buf = [0u8; 4096];
-                    let _ = conn.read(&mut buf);
-                    let body = r#"{"code":"not_found","message":"no such path"}"#;
-                    let _ = write!(
-                        conn,
-                        "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                });
-            }
-        });
-        let home = tempfile::tempdir().unwrap();
-        let cli = Cli {
-            via: Via::Copy,
-            program: node.clone(),
-            prefix: vec![PathBuf::from(&script).to_string_lossy().into_owned()],
-            path: node.parent().unwrap().into(),
-            version: None,
-        };
-        let env: Vec<(&str, String)> = vec![
-            ("HOME", home.path().to_string_lossy().into_owned()),
-            ("SPACESHEEP_CONFIG_DIR", home.path().join("c").to_string_lossy().into_owned()),
-            ("SPACESHEEP_ORIGIN", origin.clone()),
-            ("SPACESHEEP_APP_ORIGIN", origin.clone()),
-            ("SPACESHEEP_CONTENT_ORIGIN", origin),
-            ("SPACESHEEP_NO_UPDATE_CHECK", "1".into()),
-            ("SPACESHEEP_KEY", "synthetic-good-key-0000".into()),
-        ];
-        // serves() has no env of its own: set them for this process (this test is the only one reading them)
-        for (k, v) in &env {
-            std::env::set_var(k, v);
-        }
-        assert_eq!(serves(&cli, &["spaces", "list"], Duration::from_secs(60)), Ok(false));
-        assert_eq!(serves(&cli, &["versions", "list"], Duration::from_secs(60)), Ok(false));
-    }
-
-    #[test]
-    fn a_failed_help_that_is_not_the_top_level_help_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let sh = dir.path().join("spacesheep");
-        std::fs::write(&sh, "#!/bin/sh\necho '✗ fetch failed' >&2\nexit 1\n").unwrap();
-        std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let cli = Cli { via: Via::Own, program: sh, prefix: vec![], path: "/usr/bin:/bin".into(), version: None };
-        let err = serves(&cli, &["spaces", "list"], Duration::from_secs(10)).unwrap_err();
-        assert!(err.contains("fetch failed"), "{err}");
-        // the top-level help at exit 1 (what 1.36.0 does for `spaces`) is "not served"
-        std::fs::write(
-            cli.program.clone(),
-            "#!/bin/sh\necho 'spacesheep 1.36.0 — publish web pages to spacesheep.dev'\nexit 1\n",
-        )
-        .unwrap();
-        assert_eq!(serves(&cli, &["spaces", "list"], Duration::from_secs(10)), Ok(false));
     }
 }

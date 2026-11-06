@@ -139,7 +139,11 @@ fn only_agents_whose_session_published_a_page_are_listened_for() {
     std::thread::sleep(Duration::from_secs(2)); // two more looks
     assert_eq!(fake.listens("s-2"), 0, "quiet's session has published nothing: {:?}", fake.calls());
     assert!(board.posts().is_empty());
-    assert!(fake.calls().contains(&"versions page-s-1 --json --limit=200".to_string()), "{:?}", fake.calls());
+    assert!(
+        fake.calls().contains(&"versions list --space-id page-s-1 --json --limit=200".to_string()),
+        "{:?}",
+        fake.calls()
+    );
 
     // quiet publishes a page: at the next read of the pages it's listened for, and its message posts in its thread
     fake.published("s-2");
@@ -147,7 +151,7 @@ fn only_agents_whose_session_published_a_page_are_listened_for() {
     assert_eq!(got.len(), 1, "{}", node.log());
     assert_eq!(got[0]["thread_id"], 42);
     assert!(got[0]["text"].as_str().unwrap().starts_with("@quiet\n\n"), "{}", got[0]["text"]);
-    let reads = fake.calls().iter().filter(|c| *c == "versions page-s-1 --json --limit=200").count();
+    let reads = fake.calls().iter().filter(|c| *c == "versions list --space-id page-s-1 --json --limit=200").count();
     assert_eq!(reads, 1, "a page unchanged isn't read again: {:?}", fake.calls());
 }
 
@@ -183,7 +187,10 @@ fn a_page_whose_versions_come_in_two_pages_is_read_to_its_last() {
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
     assert_eq!(got[0]["thread_id"], 41);
-    let want = ["versions page-s-1 --json --limit=200", "versions page-s-1 --json --limit=200 --after=c1"];
+    let want = [
+        "versions list --space-id page-s-1 --json --limit=200",
+        "versions list --space-id page-s-1 --json --limit=200 --after=c1",
+    ];
     assert_eq!(version_reads(&fake), want, "the second page from the first's page.next, then no more");
 }
 
@@ -561,7 +568,11 @@ fn pages_no_agent_here_ever_had_are_left_to_their_own_node() {
     fake.prints("s-nixos", &format!("{}\n", json!({"text": "@pm.editor look at this"})));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 
-    assert!(wait(WITHIN, || fake.calls().iter().any(|c| c.starts_with("versions page-s-james"))), "{}", node.log());
+    assert!(
+        wait(WITHIN, || fake.calls().iter().any(|c| c.starts_with("versions list --space-id page-s-james"))),
+        "{}",
+        node.log()
+    );
     std::thread::sleep(Duration::from_secs(3)); // looks after the pages were read
     assert_eq!((fake.listens("s-nixos"), fake.listens("s-james")), (0, 0), "{:?}", fake.calls());
     assert!(board.posts().is_empty());
@@ -624,104 +635,34 @@ fn calls_starting(fake: &Fake, word: &str) -> Vec<String> {
 }
 
 #[test]
-fn where_the_server_names_the_new_commands_every_page_of_spaces_and_versions_is_read_with_them() {
-    // the account has more pages than one answer holds: this session's is on the second (EXT-141)
+fn a_versions_call_that_fails_is_said_with_its_error_info_and_the_old_command_is_not_run() {
+    // a 401, a 500 or an answer that doesn't parse is the read's error: no `versions <space>` is run in its place
     let board = Board::with(vec![agent("scene", "s-1", 41)]);
     let fake = Fake::new();
-    fake.serves_new_commands();
-    fake.spaces_page("", &["page-other"], "c1");
-    fake.spaces_page("c1", &["page-s-1"], "");
-    fake.versions_of("page-other", "s-other");
-    fake.versions_of("page-s-1", "s-1");
-    fake.prints("s-1", &format!("{MESSAGE}\n"));
-    let node = spacesheep(&fake, &board, on()).start().unwrap();
-
-    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
-    assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
-    assert_eq!(got[0]["thread_id"], 41);
-    assert_eq!(
-        calls_starting(&fake, "spaces "),
-        ["spaces list --json --limit=200", "spaces list --json --limit=200 --after=c1"],
-        "the second page from the first's page.next, then no more"
-    );
-    assert!(calls_starting(&fake, "list ").is_empty(), "today's list isn't run: {:?}", fake.calls());
-    assert_eq!(
-        calls_starting(&fake, "versions "),
-        [
-            "versions list --space-id page-other --json --limit=200",
-            "versions list --space-id page-s-1 --json --limit=200"
-        ]
-    );
-}
-
-#[test]
-fn a_new_command_that_fails_is_said_with_its_error_info_and_never_read_as_absent() {
-    // a 401, a 500, a timeout or an answer that doesn't parse says nothing about whether the command is served:
-    // today's `list` isn't run in its place
-    let board = Board::with(vec![agent("scene", "s-1", 41)]);
-    let fake = Fake::new();
-    fake.serves_new_commands();
+    fake.published("s-1");
     fake.new_calls_refuse(r#"{"code":"unauthenticated","message":"that key is not accepted","violations":[]}"#);
     fake.prints("s-1", &format!("{MESSAGE}\n"));
     let node = spacesheep(&fake, &board, on()).start().unwrap();
 
-    let said = "`spacesheep spaces list` failed: unauthenticated: that key is not accepted";
+    let said = "couldn't read who published page page-s-1: unauthenticated: that key is not accepted";
     assert!(wait(WITHIN, || node.log().contains(said)), "{:?}\n{}", fake.calls(), node.log());
-    assert!(calls_starting(&fake, "list ").is_empty(), "no fallback after a refusal: {:?}", fake.calls());
+    assert!(calls_starting(&fake, "versions page").is_empty(), "no fallback after a refusal: {:?}", fake.calls());
     assert_eq!(fake.listens("s-1"), 0);
-}
-
-#[test]
-fn a_spaces_answer_that_is_not_the_new_shape_fails_the_read() {
-    // a bare array is today's `list`, not `spaces list`
-    let board = Board::with(vec![agent("scene", "s-1", 41)]);
-    let fake = Fake::new();
-    fake.serves_new_commands();
-    std::fs::write(fake.dir.path().join("spaces.new.json"), "[]").unwrap();
-    let node = spacesheep(&fake, &board, on()).start().unwrap();
-
-    assert!(
-        wait(WITHIN, || node.log().contains("`spacesheep spaces list` said")),
-        "{:?}\n{}",
-        fake.calls(),
-        node.log()
-    );
-    assert!(calls_starting(&fake, "list ").is_empty(), "{:?}", fake.calls());
 }
 
 #[test]
 fn a_malformed_versions_cursor_fails_the_read_and_never_ends_the_history() {
     // `page.next: 123` is no last page: the sessions of part of the history would be kept as all of it
-    for new in [false, true] {
-        let board = Board::with(vec![agent("scene", "s-1", 41)]);
-        let fake = Fake::new();
-        if new {
-            fake.serves_new_commands();
-            fake.spaces_page("", &["page-s-1"], "");
-        }
-        fake.published_in_two_pages("s-1", "");
-        let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
-        let bad = json!({"versions": [{"id": "c2", "created_at": at, "client": {"session_id": "s-1"}}], "page": {"next": 123}});
-        std::fs::write(fake.dir.path().join("versions.page-s-1.json"), bad.to_string()).unwrap();
-        let node = spacesheep(&fake, &board, on()).start().unwrap();
-
-        let why = "couldn't read who published page page-s-1: `spacesheep versions` said";
-        assert!(wait(WITHIN, || node.log().contains(why)), "new={new}: {:?}\n{}", fake.calls(), node.log());
-        assert_eq!(fake.listens("s-1"), 0, "new={new}: {:?}", fake.calls());
-    }
-}
-
-#[test]
-fn a_malformed_spaces_cursor_fails_the_read() {
     let board = Board::with(vec![agent("scene", "s-1", 41)]);
     let fake = Fake::new();
-    fake.serves_new_commands();
-    std::fs::write(fake.dir.path().join("spaces.new.json"), r#"{"spaces": [], "page": {"next": 7}}"#).unwrap();
+    fake.published_in_two_pages("s-1", "");
+    let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
+    let bad =
+        json!({"versions": [{"id": "c2", "created_at": at, "client": {"session_id": "s-1"}}], "page": {"next": 123}});
+    std::fs::write(fake.dir.path().join("versions.page-s-1.json"), bad.to_string()).unwrap();
     let node = spacesheep(&fake, &board, on()).start().unwrap();
-    assert!(
-        wait(WITHIN, || node.log().contains("`spacesheep spaces list` said")),
-        "{:?}\n{}",
-        fake.calls(),
-        node.log()
-    );
+
+    let why = "couldn't read who published page page-s-1: `spacesheep versions` said";
+    assert!(wait(WITHIN, || node.log().contains(why)), "{:?}\n{}", fake.calls(), node.log());
+    assert_eq!(fake.listens("s-1"), 0, "{:?}", fake.calls());
 }

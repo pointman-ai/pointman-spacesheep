@@ -74,11 +74,7 @@ case "$1 $2" in
       printf '\n  ✗ could not check %s: fetch failed\n\n' "$key" >&2; exit 1
     fi
     cat > "$here/saved";;
-  "spaces list"|"versions list")
-    if [ "$3" = --help ]; then
-      if [ -f "$here/new-api" ]; then printf '\n  %s %s [--limit N] [--after CURSOR]\n\n' "$1" "$2"; else printf '\n  spacesheep 1.36.0 — publish web pages to spacesheep.dev from a terminal or CI\n\n  Usage\n    spacesheep login\n'; fi
-      exit 0
-    fi
+  "versions list")
     page=""; space=""; prev=""
     for a in "$@"; do
       case "$a" in --after=*) page=".after-${a#--after=}";; esac
@@ -86,14 +82,10 @@ case "$1 $2" in
       prev="$a"
     done
     if [ -f "$here/new-fail" ]; then cat "$here/new-fail"; exit 1; fi
-    if [ "$1" = spaces ]; then f="$here/spaces.new$page.json"; else f="$here/versions.$space$page.json"; fi
+    f="$here/versions.$space$page.json"
     if [ -f "$f" ]; then cat "$f"; else printf '{"code":"not_found","message":"no such page of results"}\n'; exit 1; fi;;
   "list --json")
     if [ -f "$here/spaces.json" ]; then cat "$here/spaces.json"; else echo '[]'; fi;;
-  "versions "*)
-    page=""
-    for a in "$@"; do case "$a" in --after=*) page=".after-${a#--after=}";; esac; done
-    if [ -f "$here/versions.$2$page.json" ]; then cat "$here/versions.$2$page.json"; else printf '\n  ✗ no space %s\n\n' "$2" >&2; exit 1; fi;;
   *)
     printf '\n  ✗ unknown command: %s\n\n' "$*" >&2; exit 1;;
 esac
@@ -198,7 +190,7 @@ impl Fake {
         self.status(&format!("{{\n  \"pro\": true,\n  \"enabled\": {on}\n}}\n"));
     }
 
-    /// A page this session published: in `list`, with its versions saying who pushed it.
+    /// A page this session published: in `list` (today's bare array), with its versions saying who pushed it.
     pub fn published(&self, session: &str) {
         let file = self.file("spaces.json");
         let mut spaces: Vec<Value> =
@@ -206,7 +198,7 @@ impl Fake {
         let id = format!("page-{session}");
         let at = format!("{}.000Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
         spaces.push(json!({"id": id, "updated_at": at, "title": "a page"}));
-        let versions = json!({"space": {"uuid": id}, "versions": [{"number": 1, "pushed_by": {"label": "Claude Code", "session_id": session}}]});
+        let versions = json!({"versions": [{"id": "c1", "created_at": at, "client": {"session_id": session}}], "page": {"next": ""}});
         std::fs::write(self.file(&format!("versions.{id}.json")), versions.to_string()).unwrap();
         let tmp = self.file("spaces.json.tmp");
         std::fs::write(&tmp, Value::Array(spaces).to_string()).unwrap();
@@ -253,23 +245,9 @@ impl Fake {
         std::fs::rename(tmp, self.file(&format!("versions.page-{session}.after-{after}.json"))).unwrap();
     }
 
-    /// The server's table names `spaces list` and `versions list` (their `--help` shows the command, not the CLI's own).
-    pub fn serves_new_commands(&self) {
-        std::fs::write(self.file("new-api"), "").unwrap();
-    }
-
-    /// Every new call prints this on stdout and exits 1: ErrorInfo, as `--json` does for a 401 or a 500.
+    /// Every `versions list` call prints this on stdout and exits 1: ErrorInfo, as `--json` does for a 401 or a 500.
     pub fn new_calls_refuse(&self, error_info: &str) {
         std::fs::write(self.file("new-fail"), error_info).unwrap();
-    }
-
-    /// `spaces list`'s page after `after` ("" for the first), naming the account's pages `ids` (each changed now) and `next`.
-    pub fn spaces_page(&self, after: &str, ids: &[&str], next: &str) {
-        let at = format!("{}Z", spacesheep::pages::iso(spacesheep::words::now() as i64));
-        let rows: Vec<Value> = ids.iter().map(|id| json!({"id": id, "updated_at": at})).collect();
-        let name =
-            if after.is_empty() { "spaces.new.json".to_string() } else { format!("spaces.new.after-{after}.json") };
-        std::fs::write(self.file(&name), json!({"spaces": rows, "page": {"next": next}}).to_string()).unwrap();
     }
 
     /// `versions list`'s one page for `space`: this session's version, the last page.

@@ -37,11 +37,9 @@ pub fn spaces(text: &str) -> Option<Vec<Space>> {
 
 /// An answer's cursor to its next page: `page.next`, a string (empty on the last page). Outer None: the cursor is
 /// malformed (not a string, or `page` not an object), so the page can't be told from a last one and the read must
-/// fail rather than keep part of the history as all of it. A missing `page` is the last page only for the legacy
-/// shape (today's `versions <space>`, which has none); the canonical answers always carry it.
-fn cursor(v: &Value, canonical: bool) -> Option<Option<String>> {
+/// fail rather than keep part of the history as all of it.  `versions list` always carries it.
+fn cursor(v: &Value) -> Option<Option<String>> {
     match v.get("page") {
-        None if !canonical => Some(None),
         Some(Value::Object(p)) => match p.get("next") {
             Some(Value::String(s)) => Some(Some(s.clone()).filter(|n| !n.is_empty())),
             _ => None,
@@ -50,22 +48,13 @@ fn cursor(v: &Value, canonical: bool) -> Option<Option<String>> {
     }
 }
 
-/// One answer of `versions <space> --json`: its versions, and the cursor to the next page (the new API's
-/// `page.next`: empty on the last page; today's answer has no `page`, so it's all there is). None if it isn't one.
-pub fn versions_page(text: &str, canonical: bool) -> Option<(Vec<Value>, Option<String>)> {
+/// One answer of `versions list --space-id <id> --json`: its versions, and the cursor to the next page
+/// (`page.next`, empty on the last page). None if it isn't one.
+pub fn versions_page(text: &str) -> Option<(Vec<Value>, Option<String>)> {
     let v: Value = serde_json::from_str(text.trim()).ok()?;
     let versions = v["versions"].as_array()?.clone();
-    let next = cursor(&v, canonical)?;
+    let next = cursor(&v)?;
     Some((versions, next))
-}
-
-/// One answer of `spaces list --json`: its spaces, and the cursor to the next page (`page.next`, empty on the last).
-/// None if it isn't one: unlike today's `list`, a bare array is not one.
-pub fn spaces_page(text: &str) -> Option<(Vec<Space>, Option<String>)> {
-    let v: Value = serde_json::from_str(text.trim()).ok()?;
-    v["spaces"].as_array()?;
-    let next = cursor(&v, true)?;
-    Some((spaces(text)?, next))
 }
 
 /// The sessions that pushed a page's versions (every page of `versions <space> --json`, in the order read), the
@@ -296,9 +285,8 @@ mod tests {
 
     /// The sessions in one answer, a page whose versions all came in one call.
     fn read(text: &str) -> Vec<(String, String)> {
-        let (versions, next) = versions_page(text, !text.contains("pushed_by")).unwrap();
-        assert_eq!(next, None, "the last page");
-        sessions(&versions)
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        sessions(v["versions"].as_array().unwrap())
     }
 
     #[test]
@@ -315,7 +303,7 @@ mod tests {
         let got = read(versions);
         let want = [("s-1", "2026-11-04T08:05:08.589Z"), ("s-2", "2026-11-04T08:06:16.089Z")];
         assert_eq!(got, want.map(|(s, at)| (s.to_string(), at.to_string())), "the first version's first, at its first");
-        assert_eq!(versions_page("{}", false), None);
+        assert_eq!(versions_page("{}"), None);
     }
 
     #[test]
@@ -343,25 +331,23 @@ mod tests {
         let newest = r#"{"versions": [
             {"id": "c3", "created_at": "2026-11-05T10:00:00Z", "client": {"session_id": "s-2"}},
             {"id": "c2", "created_at": "2026-11-05T09:00:00Z", "client": {"transport": "mcp"}}], "page": {"next": "c2"}}"#;
-        let (mut versions, next) = versions_page(newest, true).unwrap();
+        let (mut versions, next) = versions_page(newest).unwrap();
         assert_eq!(next.as_deref(), Some("c2"));
         // the oldest: s-1 pushed the page first, within the same second as s-2's first push on it
         let oldest = r#"{"versions": [
             {"id": "c1", "created_at": "2026-11-04T08:05:08Z", "client": {"session_id": "s-2"}},
             {"id": "c0", "created_at": "2026-11-04T08:05:08Z", "client": {"session_id": "s-1"}}], "page": {"next": ""}}"#;
-        let (older, next) = versions_page(oldest, true).unwrap();
+        let (older, next) = versions_page(oldest).unwrap();
         assert_eq!(next, None, "an empty next is the last page");
         versions.extend(older);
         let got = sessions(&versions);
         let want = [("s-1", "2026-11-04T08:05:08Z"), ("s-2", "2026-11-04T08:05:08Z")];
         assert_eq!(got, want.map(|(s, at)| (s.to_string(), at.to_string())), "the oldest page's first push first");
-        // today's answer: no `page`, so all there is
-        assert_eq!(versions_page(r#"{"space": {}, "versions": []}"#, false), Some((vec![], None)));
     }
 
     #[test]
     fn a_malformed_cursor_is_not_a_last_page() {
-        // canonical answers always carry `page.next` as a string; anything else must fail the read, not end it
+        // answers always carry `page.next` as a string; anything else must fail the read, not end it
         for page in [
             r#""page": {"next": 123}"#,
             r#""page": {"next": null}"#,
@@ -370,19 +356,12 @@ mod tests {
             r#""page": "50""#,
         ] {
             let v = format!(r#"{{"versions": [{{"id": "c1"}}], {page}}}"#);
-            assert_eq!(versions_page(&v, true), None, "{page}");
-            let s = format!(r#"{{"spaces": [{{"id": "p1"}}], {page}}}"#);
-            assert_eq!(spaces_page(&s), None, "{page}");
+            assert_eq!(versions_page(&v), None, "{page}");
         }
-        // no `page` at all: the last page for today's legacy answer only
-        assert_eq!(versions_page(r#"{"versions": []}"#, true), None);
-        assert_eq!(spaces_page(r#"{"spaces": []}"#), None);
-        assert_eq!(versions_page(r#"{"versions": []}"#, false), Some((vec![], None)));
-        // and a legacy answer with a malformed `page` is no last page either
-        assert_eq!(versions_page(r#"{"versions": [], "page": {"next": 5}}"#, false), None);
-        // the codec's empty collections
-        assert_eq!(spaces_page(r#"{"spaces": [], "page": {"next": ""}}"#), Some((vec![], None)));
-        assert_eq!(versions_page(r#"{"versions": [], "page": {"next": ""}}"#, true), Some((vec![], None)));
+        // no `page` at all is no last page
+        assert_eq!(versions_page(r#"{"versions": []}"#), None);
+        // the codec's empty collection
+        assert_eq!(versions_page(r#"{"versions": [], "page": {"next": ""}}"#), Some((vec![], None)));
     }
 
     #[test]
