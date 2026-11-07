@@ -25,6 +25,7 @@ Spacesheep publishes pages and sites at a URL people open on any device.
 **The CLI:** `npx -y spacesheep@latest <command>` (or `spacesheep <command>` where it's installed; `--help` lists them all).
 - A new page, private: `deploy page.html --title "…" --emoji 📄 --description "one line" --json` (one `.html` file, or a folder with an `index.html`). The answer has its `url` and `uuid`.
 - Updating one: `deploy page.html --space <uuid or url> -m "what changed" --json`. `--new` makes a new page from a folder that has one already.
+- Since CLI 1.36 an update is built on the version your folder last published or read, so edits made on the page since are merged in, not overwritten. The answer says what merged (`merged`). Before editing a page that others edit, `read <space> -o <folder>`, change, then `deploy <folder> --space <space>`. A refused clash gives the live sha: read again, or `--replace` to publish over it (erases the page's changes: only when asked).
 - `read <space> [path]` prints a page's files, `list` lists yours, and `share <space> --visibility signed_in|members|public` shares one.
 - `whoami` checks this machine's sign-in. If it fails, ask your person in the thread to run `/spacesheep add` once in the app, with a key from spacesheep.dev/settings/api-keys (never posted). Each machine then signs itself in within a minute, with a key of its own. Or they can sign this one machine in themselves: `npx -y spacesheep@latest login` in a terminal on it.
 

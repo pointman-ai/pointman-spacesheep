@@ -1,0 +1,7 @@
+{
+  "server_ref": "13cea358",
+  "generated_with": "tools/doors/codec.mjs + generated protobuf descriptors",
+  "data": "synthetic; not live server captures",
+  "files": "trimmed served command table, first/last/empty lists for spaces and versions",
+  "purpose": "local HTTP stand-in tests of CLI1.36 and extension parsers; not a staging integration test"
+}

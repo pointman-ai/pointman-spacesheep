@@ -76,6 +76,11 @@ fn executable(p: &Path) -> bool {
 /// `spacesheep` on the PATH or in `places`, else `npx` there. Never `own`, this extension's binary, which has the
 /// same name.
 pub fn find(path_var: Option<&OsStr>, places: &[PathBuf], own: Option<&Path>) -> Option<Cli> {
+    find_with(path_var, places, own, true)
+}
+
+/// As `find`; with `installed` false the machine's own `spacesheep` is passed over (it is too old, see `too_old`).
+pub fn find_with(path_var: Option<&OsStr>, places: &[PathBuf], own: Option<&Path>, installed: bool) -> Option<Cli> {
     let dirs: Vec<PathBuf> = path_var
         .map(|p| std::env::split_paths(p).collect::<Vec<_>>())
         .unwrap_or_default()
@@ -86,7 +91,7 @@ pub fn find(path_var: Option<&OsStr>, places: &[PathBuf], own: Option<&Path>) ->
     let found = |name: &str| {
         dirs.iter().map(|d| d.join(name)).find(|p| executable(p) && (own.is_none() || p.canonicalize().ok() != own))
     };
-    let (via, program, prefix) = match found("spacesheep") {
+    let (via, program, prefix) = match found("spacesheep").filter(|_| installed) {
         Some(p) => (Via::Own, p, vec![]),
         None => (Via::Npx, found("npx")?, vec!["-y".to_string(), "spacesheep@latest".to_string()]),
     };
@@ -235,10 +240,49 @@ pub fn run_with(
     Ok(Ran { code, stdout, stderr: last_words(&stderr), npm })
 }
 
+/// The oldest CLI the extension is written for: 1.36 reads the server's own table of calls and falls back to
+/// today's tools without it, so a machine's older `spacesheep` is replaced by npx's current one.
+pub const MIN_CLI: (u32, u32, u32) = (1, 36, 0);
+
+/// The version a `--version` answer names (`1.36.0`, `spacesheep 1.36.0`): the first three dotted numbers.
+pub fn version_in(text: &str) -> Option<(u32, u32, u32)> {
+    text.split(|c: char| !(c.is_ascii_digit() || c == '.')).find_map(|w| {
+        let mut n = w.split('.').map(|p| p.parse::<u32>().ok());
+        Some((n.next()??, n.next()??, n.next()??))
+    })
+}
+
+/// Whether this installed CLI is older than `MIN_CLI`. A version it can't read is not too old: that is a CLI
+/// the extension knows nothing about, and health says what it ran.
+pub fn too_old(version_answer: &Ran) -> bool {
+    let text = if version_answer.stdout.trim().is_empty() { &version_answer.stderr } else { &version_answer.stdout };
+    version_in(text).is_some_and(|v| v < MIN_CLI)
+}
+
 /// Whether this CLI's `talk reply` takes `--to`, the message it answers (CLI pull 55: its help says
 /// `[--to MESSAGE_ID]`). Without it Spacesheep answers the session's newest message.
 pub fn answers_named(help: &Ran) -> bool {
     help.stdout.contains("--to MESSAGE_ID") || help.stderr.contains("--to MESSAGE_ID")
+}
+
+/// A failed run's reason: the ErrorInfo the new commands print on stdout with `--json` (`{code, message}`, exit 1,
+/// also for a 401), else the CLI's own error on stderr.
+pub fn refusal(ran: &Ran) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(ran.stdout.trim()) {
+        let e = if v["error"].is_object() { &v["error"] } else { &v };
+        if let Some(m) = e["message"].as_str().filter(|m| !m.is_empty()) {
+            return match e["code"].as_str() {
+                Some(c) if !c.is_empty() => format!("{c}: {m}"),
+                _ => m.to_string(),
+            };
+        }
+    }
+    let said = last_words(&ran.stderr);
+    if said.is_empty() {
+        format!("exit {}", ran.code.map(|c| c.to_string()).unwrap_or_else(|| "by a signal".into()))
+    } else {
+        said
+    }
 }
 
 /// What a CLI said on stderr worth repeating, clipped: its error (`✗ not signed in — …`), else its last line. npx's
@@ -288,6 +332,33 @@ mod tests {
         let skipped = find(Some(&path), &[], Some(&b.join("spacesheep"))).unwrap();
         assert_eq!(skipped.program, a.join("npx"));
         assert!(find(Some(&std::env::join_paths([&b]).unwrap()), &[], Some(&b.join("spacesheep"))).is_none());
+    }
+
+    #[test]
+    fn an_installed_cli_older_than_the_minimum_is_too_old() {
+        let said = |s: &str| Ran { stdout: s.into(), ..Ran::default() };
+        assert_eq!(version_in("1.36.0\n"), Some((1, 36, 0)));
+        assert_eq!(version_in("spacesheep 1.26.0"), Some((1, 26, 0)));
+        assert_eq!(version_in("v2.0.1-beta"), Some((2, 0, 1)));
+        assert_eq!(version_in("no version here"), None);
+        assert!(too_old(&said("1.35.0")) && too_old(&said("spacesheep 1.26.0")));
+        assert!(!too_old(&said("1.36.0")) && !too_old(&said("1.40.2")) && !too_old(&said("2.0.0")));
+        assert!(!too_old(&said("")), "unreadable is not too old");
+        assert!(too_old(&Ran { stderr: "1.9.0".into(), ..Ran::default() }), "a version on stderr counts");
+    }
+
+    #[test]
+    fn a_too_old_installed_cli_is_passed_over_for_npx() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["spacesheep", "npx"] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([dir.path()]).unwrap();
+        assert_eq!(find_with(Some(&path), &[], None, true).unwrap().via, Via::Own);
+        let npx = find_with(Some(&path), &[], None, false).unwrap();
+        assert_eq!((npx.via, npx.prefix), (Via::Npx, vec!["-y".to_string(), "spacesheep@latest".to_string()]));
     }
 
     #[test]

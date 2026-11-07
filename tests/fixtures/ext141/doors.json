@@ -1,0 +1,530 @@
+{
+  "services": [
+    {
+      "service": "SpaceService",
+      "account": false,
+      "doc": "",
+      "file": "spacesheep/v1/spaces_service.proto",
+      "methods": [
+        {
+          "method": "ListSpaces",
+          "service": "SpaceService",
+          "doc": "Every space you own or can open, newest first.",
+          "verb": "List",
+          "noun": "Space",
+          "http": "GET",
+          "path": "/v1/spaces",
+          "where": "query",
+          "callers": [
+            "person",
+            "key",
+            "connector",
+            "agent",
+            "box"
+          ],
+          "machine_tokens": [],
+          "mcp": {
+            "name": "list_spaces",
+            "title": "List spaces",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            },
+            "refused": [],
+            "description_chars": 46,
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "after": {
+                  "type": "string",
+                  "description": "Where to start: the last page's `next`. The first page when left out. (text)"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 200,
+                  "description": "How many at most; 50 when left out, for every list. (integer; 1 to 200)"
+                },
+                "include_archived": {
+                  "type": "boolean",
+                  "description": "Archived spaces too, each marked `archived` (card 4). Off: they stay out, as archiving's docs say. (true or false)"
+                }
+              },
+              "additionalProperties": false,
+              "required": []
+            },
+            "outputSchema": {
+              "type": "object",
+              "properties": {
+                "spaces": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "emoji": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "visibility": {
+                        "type": "string"
+                      },
+                      "listed": {
+                        "type": "boolean"
+                      },
+                      "owner": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "team": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "url": {
+                        "type": "string"
+                      },
+                      "head": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "updated_at": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "team_access": {
+                        "type": "string"
+                      },
+                      "design_system": {
+                        "type": "string"
+                      },
+                      "archived": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                },
+                "page": {
+                  "type": "object",
+                  "properties": {
+                    "next": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "cli": {
+            "command": "spacesheep spaces list",
+            "usage": "spacesheep spaces list [flags]",
+            "replaces": [
+              {
+                "command": "spacesheep list",
+                "when": null,
+                "renamed": [],
+                "set": [],
+                "retired": null
+              }
+            ],
+            "args": [],
+            "flags": [
+              {
+                "flag": "--after",
+                "input": "after",
+                "type": "text",
+                "required": false,
+                "doc": "Where to start: the last page's `next`. The first page when left out."
+              },
+              {
+                "flag": "--limit",
+                "input": "limit",
+                "type": "integer",
+                "required": false,
+                "doc": "How many at most; 50 when left out, for every list.",
+                "limits": [
+                  "1 to 200"
+                ]
+              },
+              {
+                "flag": "--include-archived",
+                "input": "include_archived",
+                "type": "true or false",
+                "required": false,
+                "doc": "Archived spaces too, each marked `archived` (card 4). Off: they stay out, as archiving's docs say."
+              }
+            ]
+          },
+          "account": false,
+          "read_key": true,
+          "replaces": [],
+          "renamed": [
+            "offset=after"
+          ],
+          "answer_bytes": null,
+          "mask": null,
+          "inputs": [
+            {
+              "name": "after",
+              "type": "text",
+              "required": false,
+              "doc": "Where to start: the last page's `next`. The first page when left out.",
+              "limits": [],
+              "at": [
+                "page",
+                "after"
+              ]
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": false,
+              "doc": "How many at most; 50 when left out, for every list.",
+              "limits": [
+                "1 to 200"
+              ],
+              "range": {
+                "min": 1,
+                "max": 200
+              },
+              "at": [
+                "page",
+                "limit"
+              ]
+            },
+            {
+              "name": "include_archived",
+              "type": "true or false",
+              "required": false,
+              "doc": "Archived spaces too, each marked `archived` (card 4). Off: they stay out, as archiving's docs say.",
+              "limits": [],
+              "at": [
+                "include_archived"
+              ]
+            }
+          ],
+          "response": "ListSpacesResponse"
+        }
+      ]
+    },
+    {
+      "service": "VersionService",
+      "account": false,
+      "doc": "",
+      "file": "spacesheep/v1/spaces_service.proto",
+      "methods": [
+        {
+          "method": "ListVersions",
+          "service": "VersionService",
+          "doc": "A space's history, newest first: each version's label, time, author and what published it.",
+          "verb": "List",
+          "noun": "Version",
+          "http": "GET",
+          "path": "/v1/spaces/{space.id}/versions",
+          "where": "query",
+          "callers": [
+            "person",
+            "key",
+            "connector",
+            "agent",
+            "box"
+          ],
+          "machine_tokens": [],
+          "mcp": {
+            "name": "list_versions",
+            "title": "List versions",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            },
+            "refused": [],
+            "description_chars": 90,
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "space": {
+                  "type": "string",
+                  "description": "The space: its address, @handle/slug, or its link. (space name)"
+                },
+                "space_id": {
+                  "type": "string",
+                  "description": "`space` by its id, instead of its name. (space id)"
+                },
+                "after": {
+                  "type": "string",
+                  "description": "Where to start: the last page's `next`. The first page when left out. (text)"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 200,
+                  "description": "How many at most; 50 when left out, for every list. (integer; 1 to 200)"
+                }
+              },
+              "additionalProperties": false,
+              "required": [],
+              "allOf": [
+                {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "space"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "space_id"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "outputSchema": {
+              "type": "object",
+              "properties": {
+                "versions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "author": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "client": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "version": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string"
+                          },
+                          "session_id": {
+                            "type": "string"
+                          },
+                          "machine": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "account_id": {
+                            "type": "string"
+                          },
+                          "org_id": {
+                            "type": "string"
+                          },
+                          "repo": {
+                            "type": "string"
+                          },
+                          "branch": {
+                            "type": "string"
+                          },
+                          "commit": {
+                            "type": "string"
+                          },
+                          "extra": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          },
+                          "transport": {
+                            "type": "string"
+                          },
+                          "user_agent": {
+                            "type": "string"
+                          },
+                          "other": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "page": {
+                  "type": "object",
+                  "properties": {
+                    "next": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "cli": {
+            "command": "spacesheep versions list",
+            "usage": "spacesheep versions list (--space <space name> | --space-id <space id>) [flags]",
+            "replaces": [
+              {
+                "command": "spacesheep versions",
+                "when": null,
+                "renamed": [
+                  "1=space"
+                ],
+                "set": [],
+                "retired": null
+              }
+            ],
+            "args": [],
+            "flags": [
+              {
+                "flag": "--space",
+                "input": "space",
+                "type": "space name",
+                "required": false,
+                "either": "space",
+                "doc": "The space: its address, @handle/slug, or its link."
+              },
+              {
+                "flag": "--space-id",
+                "input": "space_id",
+                "type": "space id",
+                "required": false,
+                "either": "space",
+                "doc": "`space` by its id, instead of its name."
+              },
+              {
+                "flag": "--after",
+                "input": "after",
+                "type": "text",
+                "required": false,
+                "doc": "Where to start: the last page's `next`. The first page when left out."
+              },
+              {
+                "flag": "--limit",
+                "input": "limit",
+                "type": "integer",
+                "required": false,
+                "doc": "How many at most; 50 when left out, for every list.",
+                "limits": [
+                  "1 to 200"
+                ]
+              }
+            ]
+          },
+          "account": false,
+          "read_key": true,
+          "replaces": [],
+          "renamed": [
+            "uuid=space"
+          ],
+          "answer_bytes": null,
+          "mask": null,
+          "inputs": [
+            {
+              "name": "space",
+              "type": "space name",
+              "required": false,
+              "doc": "The space: its address, @handle/slug, or its link.",
+              "doc_from": "SpaceRef.name",
+              "limits": [],
+              "at": [
+                "space"
+              ],
+              "ref": "name",
+              "either": "space"
+            },
+            {
+              "name": "space_id",
+              "type": "space id",
+              "required": false,
+              "doc": "`space` by its id, instead of its name.",
+              "limits": [],
+              "at": [
+                "space"
+              ],
+              "ref": "id",
+              "either": "space"
+            },
+            {
+              "name": "after",
+              "type": "text",
+              "required": false,
+              "doc": "Where to start: the last page's `next`. The first page when left out.",
+              "limits": [],
+              "at": [
+                "page",
+                "after"
+              ]
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": false,
+              "doc": "How many at most; 50 when left out, for every list.",
+              "limits": [
+                "1 to 200"
+              ],
+              "range": {
+                "min": 1,
+                "max": 200
+              },
+              "at": [
+                "page",
+                "limit"
+              ]
+            }
+          ],
+          "response": "ListVersionsResponse"
+        }
+      ]
+    }
+  ],
+  "forwards": {}
+}

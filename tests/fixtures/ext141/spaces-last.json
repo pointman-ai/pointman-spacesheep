@@ -1,0 +1,21 @@
+{
+  "spaces": [
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "name": "",
+      "title": "Second fixture page",
+      "emoji": "",
+      "description": "",
+      "visibility": "private",
+      "listed": false,
+      "url": "",
+      "updated_at": "2026-11-06T08:00:00Z",
+      "team_access": "unspecified",
+      "design_system": "",
+      "archived": false
+    }
+  ],
+  "page": {
+    "next": ""
+  }
+}

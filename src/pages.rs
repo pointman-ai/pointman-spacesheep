@@ -1,8 +1,7 @@
 //! Which sessions published a page: a page's Session tab talks to the session that deployed it, and every deploy
-//! records its session (`spacesheep versions <space> --json`: each version's `client.session_id`, or today's
-//! `pushed_by.session_id`). The spaces come from `spacesheep list --json` (the account's latest, with `id` and
-//! `updated_at`: a bare array today, `{spaces, page}` from the new API), so a page's versions are read
-//! again only when it has changed. That list is only the latest 50, so a page that leaves it is kept a while: it
+//! records its session (`spacesheep versions list --space-id <id> --json`: each version's `client.session_id`). The
+//! spaces come from `spacesheep spaces list --json` (every page of the account's spaces, with `id` and `updated_at`),
+//! so a page's versions are read again only when it has changed. A page that leaves the list is kept a while: it
 //! hasn't changed since, so who published it still holds (EXT-75).
 
 use std::collections::BTreeMap;
@@ -14,54 +13,65 @@ use serde_json::Value;
 pub const KEEP_DAYS: i64 = 30;
 pub const KEEP_MAX: usize = 500;
 
-/// A space as `list --json` gives it: its id, and when it last changed.
+/// A space as `spaces list --json` gives it: its id, and when it last changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Space {
     pub id: String,
     pub updated_at: String,
 }
 
-/// The spaces in `list --json`'s answer (an array, or `{spaces: […]}`); None if it isn't one.
-pub fn spaces(text: &str) -> Option<Vec<Space>> {
+/// One answer of `spaces list --json`: its spaces, and the cursor to the next page (`page.next`, empty on the last).
+/// None if it isn't one: a bare array is not, and a malformed cursor fails the read like a versions one.
+pub fn spaces_page(text: &str) -> Option<(Vec<Space>, Option<String>)> {
     let v: Value = serde_json::from_str(text.trim()).ok()?;
-    let rows = v.as_array().or_else(|| v["spaces"].as_array())?;
-    Some(
+    let rows = v["spaces"].as_array()?;
+    let next = cursor(&v)?;
+    Some((
         rows.iter()
             .filter_map(|r| {
-                let id = r["id"].as_str().or_else(|| r["uuid"].as_str())?;
+                let id = r["id"].as_str()?;
                 Some(Space { id: id.to_string(), updated_at: r["updated_at"].as_str().unwrap_or("").to_string() })
             })
             .collect(),
-    )
+        next,
+    ))
 }
 
-/// One answer of `versions <space> --json`: its versions, and the cursor to the next page (the new API's
-/// `page.next`: empty on the last page; today's answer has no `page`, so it's all there is). None if it isn't one.
+/// An answer's cursor to its next page: `page.next`, a string (empty on the last page). Outer None: the cursor is
+/// malformed (not a string, or `page` not an object), so the page can't be told from a last one and the read must
+/// fail rather than keep part of the history as all of it.  `versions list` always carries it.
+fn cursor(v: &Value) -> Option<Option<String>> {
+    match v.get("page") {
+        Some(Value::Object(p)) => match p.get("next") {
+            Some(Value::String(s)) => Some(Some(s.clone()).filter(|n| !n.is_empty())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// One answer of `versions list --space-id <id> --json`: its versions, and the cursor to the next page
+/// (`page.next`, empty on the last page). None if it isn't one.
 pub fn versions_page(text: &str) -> Option<(Vec<Value>, Option<String>)> {
     let v: Value = serde_json::from_str(text.trim()).ok()?;
     let versions = v["versions"].as_array()?.clone();
-    let next = v["page"]["next"].as_str().filter(|n| !n.is_empty()).map(str::to_string);
+    let next = cursor(&v)?;
     Some((versions, next))
 }
 
 /// The sessions that pushed a page's versions (every page of `versions <space> --json`, in the order read), the
 /// first version's first, each once with when its first version was pushed (`created_at`, "" when it's not given).
 ///
-/// Two shapes: today's numbers each version and names its session in `pushed_by.session_id`. Spacesheep's new API
-/// (ListVersions) lists them newest first with no number, and names it in `client.session_id`, read first. Either
-/// is set only on the reading key's own account's versions, so an empty one is someone else's and is skipped.
+/// The versions are Spacesheep's new API's (ListVersions), newest first, and name their session in
+/// `client.session_id` only. It is set only on the reading key's own account's versions, so a missing or empty one is
+/// someone else's and is skipped; no owner is inferred from any other field (`pushed_by` is not read).
 pub fn sessions(versions: &[Value]) -> Vec<(String, String)> {
-    let mut versions: Vec<&Value> = versions.iter().collect();
-    if versions.iter().any(|x| x["number"].is_i64()) {
-        versions.sort_by_key(|x| x["number"].as_i64().unwrap_or(i64::MAX));
-    } else {
-        versions.reverse();
-        versions.sort_by_key(|x| x["created_at"].as_str().and_then(secs).unwrap_or(i64::MAX));
-    }
+    // newest first as read: oldest first, by when each was created (a stable sort keeps the read order for a tie)
+    let mut versions: Vec<&Value> = versions.iter().rev().collect();
+    versions.sort_by_key(|x| x["created_at"].as_str().and_then(secs).unwrap_or(i64::MAX));
     let mut out: Vec<(String, String)> = Vec::new();
     for x in versions {
-        let named = [&x["client"]["session_id"], &x["pushed_by"]["session_id"]];
-        let Some(s) = named.into_iter().filter_map(Value::as_str).find(|s| !s.is_empty()) else { continue };
+        let Some(s) = x["client"]["session_id"].as_str().filter(|s| !s.is_empty()) else { continue };
         if !out.iter().any(|(o, _)| o == s) {
             out.push((s.to_string(), x["created_at"].as_str().unwrap_or("").to_string()));
         }
@@ -272,25 +282,21 @@ mod tests {
 
     /// The sessions in one answer, a page whose versions all came in one call.
     fn read(text: &str) -> Vec<(String, String)> {
-        let (versions, next) = versions_page(text).unwrap();
-        assert_eq!(next, None, "the last page");
-        sessions(&versions)
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        sessions(v["versions"].as_array().unwrap())
     }
 
     #[test]
     fn spaces_and_their_publishers_from_the_clis_answers() {
-        let list = r#"[{"id": "p1", "updated_at": "2026-10-20T13:27:34Z", "title": "a"}, {"id": "p2", "updated_at": "t2"}, {"title": "no id"}]"#;
-        let got = spaces(list).unwrap();
-        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["p1", "p2"]);
-        assert_eq!(spaces("not json"), None);
-        let versions = r#"{"space": {"uuid": "p1"}, "versions": [
-            {"number": 3, "created_at": "2026-11-04T09:00:00.000Z", "pushed_by": {"session_id": "s-1"}},
-            {"number": 2, "created_at": "2026-11-04T08:06:16.089Z", "pushed_by": {"label": "Claude Code", "session_id": "s-2"}},
-            {"number": 1, "created_at": "2026-11-04T08:05:08.589Z", "pushed_by": {"label": "Claude Code", "session_id": "s-1"}},
-            {"number": 0, "via": "web"}]}"#;
-        let got = read(versions);
-        let want = [("s-1", "2026-11-04T08:05:08.589Z"), ("s-2", "2026-11-04T08:06:16.089Z")];
-        assert_eq!(got, want.map(|(s, at)| (s.to_string(), at.to_string())), "the first version's first, at its first");
+        let list = r#"{"spaces": [{"id": "p1", "updated_at": "2026-10-20T13:27:34Z", "name": "a"}, {"id": "p2", "updated_at": "t2"}, {"name": "no id"}], "page": {"next": ""}}"#;
+        let (got, next) = spaces_page(list).unwrap();
+        assert_eq!((got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), next), (vec!["p1", "p2"], None));
+        assert_eq!(spaces_page("not json"), None);
+        assert_eq!(spaces_page(r#"[{"id": "p1"}]"#), None, "a bare array is not an answer");
+        assert_eq!(spaces_page(r#"{"spaces": []}"#), None, "no page, no last page");
+        for page in [r#"{"next": 7}"#, "{}", "null"] {
+            assert_eq!(spaces_page(&format!(r#"{{"spaces": [], "page": {page}}}"#)), None, "{page}");
+        }
         assert_eq!(versions_page("{}"), None);
     }
 
@@ -298,7 +304,8 @@ mod tests {
     fn the_new_apis_answers_name_the_same_spaces_and_sessions() {
         let list = r#"{"spaces": [{"id": "p1", "name": "@james/a", "updated_at": "2026-11-05T10:42:00Z"},
             {"id": "p2", "updated_at": "2026-11-05T10:41:59.120Z"}], "page": {"next": "50"}}"#;
-        let got = spaces(list).unwrap();
+        let (got, next) = spaces_page(list).unwrap();
+        assert_eq!(next.as_deref(), Some("50"));
         let want = [("p1", "2026-11-05T10:42:00Z"), ("p2", "2026-11-05T10:41:59.120Z")];
         assert_eq!(got.iter().map(|s| (s.id.as_str(), s.updated_at.as_str())).collect::<Vec<_>>(), want);
         // ListVersions: newest first, no number; on someone else's version `client` has only `transport` and `other`
@@ -331,18 +338,36 @@ mod tests {
         let got = sessions(&versions);
         let want = [("s-1", "2026-11-04T08:05:08Z"), ("s-2", "2026-11-04T08:05:08Z")];
         assert_eq!(got, want.map(|(s, at)| (s.to_string(), at.to_string())), "the oldest page's first push first");
-        // today's answer: no `page`, so all there is
-        assert_eq!(versions_page(r#"{"space": {}, "versions": []}"#), Some((vec![], None)));
     }
 
     #[test]
-    fn client_session_is_read_first_and_an_empty_one_falls_back_to_pushed_by() {
+    fn a_malformed_cursor_is_not_a_last_page() {
+        // answers always carry `page.next` as a string; anything else must fail the read, not end it
+        for page in [
+            r#""page": {"next": 123}"#,
+            r#""page": {"next": null}"#,
+            r#""page": {}"#,
+            r#""page": null"#,
+            r#""page": "50""#,
+        ] {
+            let v = format!(r#"{{"versions": [{{"id": "c1"}}], {page}}}"#);
+            assert_eq!(versions_page(&v), None, "{page}");
+        }
+        // no `page` at all is no last page
+        assert_eq!(versions_page(r#"{"versions": []}"#), None);
+        // the codec's empty collection
+        assert_eq!(versions_page(r#"{"versions": [], "page": {"next": ""}}"#), Some((vec![], None)));
+    }
+
+    #[test]
+    fn only_client_session_names_a_publisher_and_a_legacy_only_row_stays_unassigned() {
         let versions = r#"{"versions": [
-            {"number": 2, "client": {"session_id": "s-new"}, "pushed_by": {"session_id": "s-old"}},
-            {"number": 1, "client": {"session_id": ""}, "pushed_by": {"session_id": "s-3"}},
-            {"number": 3, "pushed_by": {"session_id": ""}}]}"#;
+            {"id": "c4", "created_at": "2026-11-04T09:00:00Z", "client": {"session_id": "s-new"}, "pushed_by": {"session_id": "s-old"}},
+            {"id": "c3", "created_at": "2026-11-04T08:30:00Z", "client": {"session_id": ""}, "pushed_by": {"session_id": "s-3"}},
+            {"number": 2, "created_at": "2026-11-04T08:20:00Z", "pushed_by": {"session_id": "s-4"}},
+            {"id": "c1", "created_at": "2026-11-04T08:10:00Z", "client": {"transport": "mcp"}}], "page": {"next": ""}}"#;
         let got: Vec<String> = read(versions).into_iter().map(|(s, _)| s).collect();
-        assert_eq!(got, ["s-3", "s-new"], "an empty session is someone else's: skipped");
+        assert_eq!(got, ["s-new"], "an empty or missing client session is someone else's: no owner from pushed_by");
     }
 
     fn who(sessions: &[&str]) -> Vec<(String, String)> {

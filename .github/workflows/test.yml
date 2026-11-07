@@ -4,7 +4,7 @@ jobs:
   test:
     strategy:
       matrix:
-        runner: [ubuntu-24.04, macos-14]
+        runner: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -13,6 +13,9 @@ jobs:
           components: rustfmt, clippy
       # Spacesheep's real CLI through npx, signed out, for tests/real_cli.rs (the runners have Node.js)
       - run: echo "SPACESHEEP_REAL_CLI=$(dirname "$(command -v npx)")" >> "$GITHUB_ENV"
+      # the released CLI 1.36.0, for tests/new_cli.rs and the old-server check in src/cli.rs (they skip without it)
+      - run: npm install --prefix "$RUNNER_TEMP/cli136" spacesheep@1.36.0
+      - run: echo "SPACESHEEP_CLI_1_36=$RUNNER_TEMP/cli136/node_modules/spacesheep/bin/spacesheep.js" >> "$GITHUB_ENV"
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
