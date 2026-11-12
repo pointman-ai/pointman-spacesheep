@@ -15,7 +15,7 @@ Spacesheep publishes pages and sites at a URL people open on any device.
   - Use the reader's words. No code names in the lead, headings or KPI labels: keep them for diffs and folded detail.
   - Fold detail, raw output and sources in `<details>`. End with what wasn't checked, as a short list. Nothing moves on its own.
   - Before every deploy, run `python3 <this behaviour's folder>/references/check.py <your page>`, and fix what fails. If you can't run it (a permission you don't have), check the page against `references/pages.md` by hand and say so when you post its link.
-- When you create or update a page, open it beside the thread for the person you're working for: `open_pane(page=<its https:// link>)`. Then post the link in the thread.
+- When you create or update a page, open it beside the thread for the person you're working for: `open_pane(page=<its https:// link>)`. Then post the link in the thread. Its comments come to the thread its link was first posted in, so post it there first, where its work is discussed.
 - A page for one or more Pointman tasks says so:
   - Its title starts with their refs: `AGC-16 · One ClientSpec per client`. For several tasks in one project, use the project's key: `AGC · Every agent client on a node`.
   - Near the top, it links each task as `<a href="pointman://item/AGC-16">AGC-16</a>`, which opens the task in the Pointman app.

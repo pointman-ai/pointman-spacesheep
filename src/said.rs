@@ -123,6 +123,23 @@ pub fn page(raw: &str) -> Option<String> {
     Some(id.to_string()).filter(|id| !id.is_empty() && !id.contains('/'))
 }
 
+/// The links a post would carry for the page a message was written on (EXT-150): its `space_url` without its query
+/// or fragment, and its short link, `<that origin>/<name>` when the page's name is `@owner/slug`. Empty when the
+/// message names no page.
+pub fn page_links(raw: &str, name: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else { return vec![] };
+    let Some(url) = v["space_url"].as_str().map(str::trim).filter(|u| u.starts_with("https://")) else {
+        return vec![];
+    };
+    let url = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
+    let mut links = vec![url.to_string()];
+    let short = name.strip_prefix('@').is_some_and(|n| n.contains('/') && !n.contains(char::is_whitespace));
+    if let (true, Some((origin, _))) = (short, url.split_once("/space/")) {
+        links.push(format!("{origin}/{name}"));
+    }
+    links
+}
+
 /// The message's id (`id`, a whole number above 0), which `talk reply --to` takes to answer that message.
 pub fn message_id(raw: &str) -> Option<i64> {
     let v: Value = serde_json::from_str(raw).ok()?;
@@ -263,5 +280,19 @@ mod tests {
         assert_eq!(earlier(alone, &raw), None);
         assert_eq!(earlier(message, r#"{"asked_in": "Session tab"}"#), None);
         assert_eq!(earlier(&message.replace("wrote this as a comment on it, to you. ", "said: "), &raw), None);
+    }
+
+    /// A page's links, as a post linking it would have them (EXT-150).
+    #[test]
+    fn a_pages_links_are_its_space_link_and_its_short_one() {
+        let raw = r#"{"space_url": "https://spacesheep.dev/space/p1?comment=c#x", "space_uuid": "p1"}"#;
+        let both = ["https://spacesheep.dev/space/p1", "https://spacesheep.dev/@james/a-page"];
+        assert_eq!(page_links(raw, "@james/a-page"), both);
+        assert_eq!(page_links(raw, ""), ["https://spacesheep.dev/space/p1"], "no name: its space link alone");
+        assert_eq!(page_links(raw, "a-page"), ["https://spacesheep.dev/space/p1"], "not an @owner/slug name");
+        assert_eq!(page_links(raw, "@james/a page"), ["https://spacesheep.dev/space/p1"]);
+        assert!(page_links(r#"{"space_uuid": "p1"}"#, "@james/a").is_empty(), "no space_url, no links");
+        assert!(page_links(r#"{"space_url": "http://x/space/p1"}"#, "@james/a").is_empty(), "https only");
+        assert!(page_links("not json", "@james/a").is_empty());
     }
 }

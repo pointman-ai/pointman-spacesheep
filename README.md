@@ -56,7 +56,11 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   5 s, doubling to 5 minutes. An agent with a new session, or Talk turned off, has its listener stopped. Each
   listener is a process group of its own, kept in the state folder (`listeners.json`), so a restart stops any left
   from a crash.
-- **Each message** is a `board.post` in the page's own thread, as the extension's robot account: the thread the first
+- **Each message** is a `board.post` in the page's own thread, as the extension's robot account: the thread the
+  page's link was first posted in (EXT-150). The extension asks core for the posts that link the page, by its
+  `/space/<id>` link and its short `@owner/slug` one, oldest first, as its robot may read them (`permissions.read`,
+  `core.call GET /v1/node/ext/posts`), and takes the first that isn't one of its own relays. **The fallback,** when no
+  post it may read links the page, or the node or core can't say (one from before EXT-151): the thread the first
   session here that pushed it was running in when it did (its first version's `created_at`, against that session's
   threads as each look saw them, kept in `threads.json`), set once in `pages.json`, so a page's comments stay with it
   when its agent goes on to work in another thread. A session seen before 0.8.2 kept that history counts its last

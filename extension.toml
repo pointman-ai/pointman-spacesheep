@@ -17,7 +17,7 @@
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.9.6"
+version = "0.9.7"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
 node = ">=0.4,<1"
@@ -38,6 +38,7 @@ rules = ["Bash(spacesheep:*)", "Bash(npx -y spacesheep@latest:*)"]
 network = true                   # spacesheep.dev, through its CLI
 agents = true                    # agents.sessions: each agent's session and latest thread
 post = true                      # board.post: each message, as a post in the agent's thread
+read = true                      # core.call GET /v1/node/ext/posts: the thread a page's link was first posted in
 secrets = ["spacesheep.key"]     # the API key that signs each node in (EXT-132); only ever in the CLI's environment
 
 [[credentials]]
