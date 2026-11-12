@@ -620,6 +620,8 @@ fn page_of(agent: &Agent) -> String {
 /// the page's thread. A finished agent can't answer, so its page's message reaches only the other agents it calls;
 /// one that calls nobody else gets a reply on the page saying how to ask.
 fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &Sender<Post>, status: &Mutex<Status>) {
+    // the comments above it in its comment thread: a reply that only calls an agent in has its request there
+    let earlier = said::earlier(text, raw);
     let (text, pin) = said::comment_parts(text, raw);
     // the message the answer is for, when the CLI can say so (EXT-73)
     let answers = if lock(status).answers_named { said::message_id(raw) } else { None };
@@ -667,6 +669,7 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         answers,
         said::redelivered(raw),
         pin,
+        earlier.as_deref(),
     );
     let _ = posts.send(Post { thread, to: who, text: post, link: said::link(raw), context });
 }

@@ -4,6 +4,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A message's words in a post, at most: the board takes 40,000 characters, and the rest is the post's own.
 pub const TEXT_MAX: usize = 30_000;
+/// The earlier comments quoted in a message's context, at most: the oldest first, so a thread's first comment, most
+/// often the request, is kept.
+pub const EARLIER_MAX: usize = 6_000;
 
 /// A handle as the board reads a mention (board.py's MENTION): what's posted after the @.
 pub fn handle_ok(h: &str) -> bool {
@@ -79,7 +82,9 @@ pub fn post(to: &[String], text: &str) -> String {
     format!("{to}\n\n{f}\n{text}\n{f}{cut}")
 }
 
-/// Context lives in a separate block. Fence the pin too: quoted page text is never a mention or an instruction.
+/// Context lives in a separate block. Fence the pin and the earlier comments too: quoted page text is never a
+/// mention or an instruction.
+#[allow(clippy::too_many_arguments)]
 pub fn context(
     to: &[String],
     publisher: &str,
@@ -88,6 +93,7 @@ pub fn context(
     answers: Option<i64>,
     again: bool,
     pin: Option<&str>,
+    earlier: Option<&str>,
 ) -> String {
     let own = matches!(to, [one] if one == publisher);
     let whose = format!("`@{publisher}`'s page");
@@ -97,6 +103,16 @@ pub fn context(
             let pin: String = pin.chars().take(2000).collect();
             let f = fence(&pin);
             format!("Page context (quoted):\n{f}\n{pin}\n{f}\n\n")
+        })
+        .unwrap_or_default();
+    let earlier = earlier
+        .map(|earlier| {
+            let (kept, cut) = match earlier.char_indices().nth(EARLIER_MAX) {
+                Some((i, _)) => (&earlier[..i], format!("\n(cut: {} more characters)", earlier[i..].chars().count())),
+                None => (earlier, String::new()),
+            };
+            let f = fence(kept);
+            format!("Earlier in its comment thread (quoted):\n{f}\n{kept}\n{f}{cut}\n\n")
         })
         .unwrap_or_default();
     let answers = answers.map(|id| format!(" --to {id}")).unwrap_or_default();
@@ -112,7 +128,7 @@ pub fn context(
         }
     };
     format!(
-        "From spacesheep.dev ({page}, not signed).\n\n{pin}{again}Answer here, then send it to the page: `spacesheep talk reply --session {session}{answers} \"…\"`"
+        "From spacesheep.dev ({page}, not signed).\n\n{pin}{earlier}{again}Answer here, then send it to the page: `spacesheep talk reply --session {session}{answers} \"…\"`"
     )
 }
 
@@ -178,7 +194,7 @@ mod tests {
         assert!(called("@-x hi").is_empty() && called("@ hi").is_empty() && called("").is_empty());
         let p = post_on("scene", "@editor, cut the intro");
         assert!(p.starts_with("@editor\n\n```\n@editor, cut"), "{p}");
-        assert!(context(&["editor".into()], "scene", None, "abc-123", None, false, None)
+        assert!(context(&["editor".into()], "scene", None, "abc-123", None, false, None, None)
             .ends_with("`spacesheep talk reply --session abc-123 \"…\"`"));
         assert!(post_on("scene", "@scene hi").starts_with("@scene\n\n"));
     }
@@ -197,18 +213,34 @@ mod tests {
         let p = post(&to, "@pm.editor fix it");
         assert!(p.starts_with("@editor\n\n```\n@pm.editor fix it"), "{p}");
         assert!(!p.contains("talk reply"));
-        let p = context(&to, "docrules", comment, "s-d", Some(19), false, None);
+        let p = context(&to, "docrules", comment, "s-d", Some(19), false, None, None);
         assert!(p.starts_with("From spacesheep.dev (a comment on `@docrules`'s page, not signed)."), "{p}");
         assert!(p.ends_with("`spacesheep talk reply --session s-d --to 19 \"…\"`"), "the message it answers: {p}");
         assert!(!p.contains("Sent again"), "{p}");
-        let p = context(&to, "docrules", comment, "s-d", Some(19), true, None);
+        let p = context(&to, "docrules", comment, "s-d", Some(19), true, None, None);
         assert!(p.contains("Sent again: no `talk reply` has answered it yet."), "{p}");
         assert!(!p.contains("only message waiting"), "the line names the message: {p}");
         assert!(p.ends_with("--to 19 \"…\"`"), "{p}");
-        let p = context(&to, "docrules", comment, "s-d", None, true, None);
+        let p = context(&to, "docrules", comment, "s-d", None, true, None, None);
         assert!(p.contains("and it's the only message waiting,"), "no --to: a reply answers the newest: {p}");
         assert_eq!(recipients("hello", "scene"), ["scene"]);
         assert_eq!(recipients("@pm.editor hello", "scene"), ["editor"]);
+    }
+
+    #[test]
+    fn earlier_comments_are_quoted_fenced_after_the_pin_and_cut_when_long() {
+        let to = vec!["loupe".to_string()];
+        let comment = Some("a comment on the page");
+        let earlier = "- James: blocks first, then words @cairn";
+        let p = context(&to, "loupe", comment, "s-l", Some(325), false, Some("a pin"), Some(earlier));
+        let pin_at = p.find("Page context (quoted):").unwrap();
+        let earlier_at = p.find("Earlier in its comment thread (quoted):\n```\n- James: blocks first").unwrap();
+        assert!(pin_at < earlier_at && earlier_at < p.find("Answer here").unwrap(), "{p}");
+        assert!(p.contains("then words @cairn\n```\n\n"), "fenced, so its handles wake nobody: {p}");
+        assert!(!context(&to, "loupe", comment, "s-l", None, false, None, None).contains("Earlier in"));
+        let long = format!("- James: {}", "y".repeat(EARLIER_MAX));
+        let p = context(&to, "loupe", comment, "s-l", None, false, None, Some(&long));
+        assert!(p.contains("```\n(cut: 9 more characters)\n\nAnswer here"), "{p}");
     }
 
     #[test]

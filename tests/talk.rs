@@ -20,7 +20,7 @@ fn a_comment_keeps_its_words_and_moves_pin_and_reply_into_context() {
     assert!(wait(WITHIN, || fake.listens("s-1") == 1), "{}", node.log());
     let words = "make this clearer\n\n---\nkeep my horizontal rule and @james here";
     let url = "https://spacesheep.dev/space/page?comment=comment-1";
-    let message = format!("{words}\n\n---\nThe owner of the page “Title” ({url}) wrote this as a comment on it, to you. It is pinned to a block reading: @other ```quoted```.\nEarlier in that comment thread (quoted for context):\n- someone: old words\nYour answer is posted as a reply; use your own session.");
+    let message = format!("{words}\n\n---\nThe owner of the page “Title” ({url}) wrote this as a comment on it, to you. It is pinned to a block reading: @other ```quoted```.\nEarlier in that comment thread (quoted for context):\n- someone: old words for @cairn\nYour answer is posted as a reply; use your own session.");
     fake.push("s-1", &format!("{}\n", json!({"message": message, "space_url": "https://spacesheep.dev/space/page", "asked_in": "a comment on the page", "id": 19})));
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
@@ -33,8 +33,14 @@ fn a_comment_keeps_its_words_and_moves_pin_and_reply_into_context() {
             && context.contains("--session s-1 --to 19"),
         "{context}"
     );
-    assert!(!context.contains("old words") && !context.contains("use your own session"), "{context}");
-    assert_eq!(mentioned(&format!("{text}\n{context}")), ["scene"]);
+    // the comments above it are quoted with it, after the pin, in their own fence (EXT-130, EXT-150); Spacesheep's
+    // instructions stay out
+    assert!(
+        context.contains("Earlier in its comment thread (quoted):\n```\n- someone: old words for @cairn\n```"),
+        "{context}"
+    );
+    assert!(!text.contains("old words") && !context.contains("use your own session"), "{context}");
+    assert_eq!(mentioned(&format!("{text}\n{context}")), ["scene"], "a quoted handle wakes nobody");
     assert_eq!(got[0]["links"], json!([url]));
 }
 
