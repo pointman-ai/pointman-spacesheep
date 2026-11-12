@@ -1117,14 +1117,13 @@ impl Talk {
     }
 }
 
+/// What a read of the pages gives: the sessions that published them (see [`Known::publishers`]), each page's
+/// thread where it was published, and each listed page's name, by the page's id.
+type PagesRead = (Vec<String>, BTreeMap<String, i64>, BTreeMap<String, String>);
+
 /// Who published the account's latest pages (`list --json`), each page's versions read only when it has changed; and
 /// each page's own thread, where it's known (`seen`: where each session here has run).
-fn publishers(
-    h: &Handle,
-    cli: &Cli,
-    file: &std::path::Path,
-    seen: &Seen,
-) -> Result<(Vec<String>, BTreeMap<String, i64>, BTreeMap<String, String>), String> {
+fn publishers(h: &Handle, cli: &Cli, file: &std::path::Path, seen: &Seen) -> Result<PagesRead, String> {
     let list = spaces(cli)?;
     let names = list.iter().filter(|s| !s.name.is_empty()).map(|s| (s.id.clone(), s.name.clone())).collect();
     let mut known = Known::from_json(&std::fs::read_to_string(file).unwrap_or_default());
