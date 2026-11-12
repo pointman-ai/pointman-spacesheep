@@ -72,9 +72,10 @@ const POST_TRIES: u32 = 3;
 const POST_AGAIN: Duration = Duration::from_secs(10);
 /// Where a message's page had its link posted: core's posts that link it, oldest first, read as the extension's own
 /// robot may (`permissions.read`, EXT-151), at most this many, within this long. The robot's handle is the
-/// extension's id: its own relays link the page too, so they don't count.
+/// extension's id: its own relays link the page too, so they don't count. Core cuts to the limit before they're
+/// dropped, so ask for core's most: a page whose first relays came before anyone posted its link still finds it.
 const LINKED_POSTS: &str = "/v1/node/ext/posts";
-const LINKED_LIMIT: u32 = 10;
+const LINKED_LIMIT: u32 = 50;
 const LINKED_TIMEOUT: Duration = Duration::from_secs(10);
 const ROBOT: &str = "spacesheep";
 /// A session id as Spacesheep's CLI takes one (lib/talk.js's SESSION_RE).

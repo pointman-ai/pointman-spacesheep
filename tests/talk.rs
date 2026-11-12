@@ -466,7 +466,7 @@ fn a_pages_messages_go_where_its_link_was_first_posted() {
     assert_eq!(got[0]["thread_id"], 77, "where its link was first posted: {}", node.log());
     assert!(node.log().contains("posting it in thread 77, where the page's link was first posted"), "{}", node.log());
     let asked: Vec<Value> =
-        board.core_calls().into_iter().filter(|c| c["path"] == "/v1/node/ext/posts?limit=10").collect();
+        board.core_calls().into_iter().filter(|c| c["path"] == "/v1/node/ext/posts?limit=50").collect();
     assert_eq!(asked.len(), 1, "{:?}", board.core_calls());
     assert_eq!(asked[0]["method"], "GET");
     // both of the page's links, its /space/ one and its short one from its name, as a list (a path can't repeat a key)
