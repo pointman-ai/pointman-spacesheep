@@ -7,7 +7,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use serde_json::json;
+use serde_json::{json, Value};
 
 const MESSAGE: &str = r#"{"text": "Can you make the header blue?", "id": "m1"}"#;
 
@@ -440,6 +440,51 @@ fn a_pages_messages_stay_in_the_thread_it_was_published_from() {
     let got = board.wait_posts(WITHIN, |p| p.len() == 2);
     assert_eq!(got.len(), 2, "{}", node.log());
     assert_eq!(got[1]["thread_id"], 52);
+}
+
+/// A page's messages go to the thread its link was first posted in, as core says (EXT-150): scene's session publishes
+/// it while its latest thread is 41, posts its link in 77, and works on in 52. The relay's own earlier post links the
+/// page too and doesn't count. With no post linking it, or a node that can't ask core, they go where it was published.
+#[test]
+fn a_pages_messages_go_where_its_link_was_first_posted() {
+    let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
+    fake.published("s-1");
+    let node = spacesheep(&fake, &board, on()).start().unwrap();
+    let settled = "page page-s-1's messages go to thread 41, where it was published";
+    assert!(wait(WITHIN * 2, || node.log().contains(settled)), "{}", node.log());
+    board.set_agents(vec![agent("scene", "s-1", 52)]);
+    std::thread::sleep(Duration::from_millis(2500)); // a look or two
+    board.links(json!({"posts": [
+        {"id": "post_5", "thread_id": 41, "author": {"id": "mem_9", "handle": "spacesheep"}},
+        {"id": "post_6", "thread_id": 77, "author": {"id": "mem_2", "handle": "scene"}},
+        {"id": "post_8", "thread_id": 52, "author": {"id": "mem_2", "handle": "scene"}}]}));
+    let url = "https://spacesheep.dev/space/page-s-1";
+    let on_page = |n: i64| format!("{}\n", json!({"message": format!("note {n}"), "space_url": url, "id": n}));
+    fake.push("s-1", &on_page(7));
+    let got = board.wait_posts(WITHIN, |p| !p.is_empty());
+    assert_eq!(got.len(), 1, "{}", node.log());
+    assert_eq!(got[0]["thread_id"], 77, "where its link was first posted: {}", node.log());
+    assert!(node.log().contains("posting it in thread 77, where the page's link was first posted"), "{}", node.log());
+    let asked: Vec<Value> =
+        board.core_calls().into_iter().filter(|c| c["path"] == "/v1/node/ext/posts?limit=10").collect();
+    assert_eq!(asked.len(), 1, "{:?}", board.core_calls());
+    assert_eq!(asked[0]["method"], "GET");
+    // both of the page's links, its /space/ one and its short one from its name, as a list (a path can't repeat a key)
+    assert_eq!(asked[0]["query"]["link"], json!([url, "https://spacesheep.dev/@james/a-page"]));
+
+    // no post links it: where it was published
+    board.links(json!({"posts": []}));
+    fake.push("s-1", &on_page(8));
+    let got = board.wait_posts(WITHIN, |p| p.len() == 2);
+    assert_eq!(got.get(1).map(|p| p["thread_id"].clone()), Some(json!(41)), "{}", node.log());
+    assert!(node.log().contains("no post links page page-s-1"), "{}", node.log());
+
+    // a node from before EXT-151 refuses the call: the same
+    *board.linked.lock().unwrap() = None;
+    fake.push("s-1", &on_page(9));
+    let got = board.wait_posts(WITHIN, |p| p.len() == 3);
+    assert_eq!(got.get(2).map(|p| p["thread_id"].clone()), Some(json!(41)), "{}", node.log());
+    assert!(node.log().contains("couldn't ask core where page page-s-1's link was posted"), "{}", node.log());
 }
 
 #[test]

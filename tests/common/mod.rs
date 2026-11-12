@@ -351,11 +351,16 @@ pub fn agent(handle: &str, session: &str, thread: i64) -> Value {
     json!({"agent": {"name": handle}, "client": "claude", "sessionId": session, "thread": {"id": format!("thr_{thread}")}})
 }
 
-/// The node's side: the agents it says, and each post made.
+/// The node's side: the agents it says, each post made, and what core says of the posts that link a page.
 #[derive(Clone, Default)]
 pub struct Board {
     pub agents: Arc<Mutex<Vec<Value>>>,
     pub posts: Arc<Mutex<Vec<Value>>>,
+    /// Core's answer to `core.call GET /v1/node/ext/posts` (its body); None: the node refuses the call, as one from
+    /// before EXT-151 does.
+    pub linked: Arc<Mutex<Option<Value>>>,
+    /// Each `core.call` asked, as its params.
+    pub calls: Arc<Mutex<Vec<Value>>>,
 }
 
 impl Board {
@@ -371,6 +376,15 @@ impl Board {
 
     pub fn posts(&self) -> Vec<Value> {
         self.posts.lock().unwrap().clone()
+    }
+
+    /// Core answers the posts that link a page with this body (`{posts: [...]}`).
+    pub fn links(&self, body: Value) {
+        *self.linked.lock().unwrap() = Some(body);
+    }
+
+    pub fn core_calls(&self) -> Vec<Value> {
+        self.calls.lock().unwrap().clone()
     }
 
     /// Waits until the posts pass `test`, and gives them.
@@ -394,6 +408,7 @@ pub fn spacesheep(fake: &Fake, board: &Board, settings: Value) -> StandIn {
 /// The extension under a stand-in node, with this PATH.
 pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn {
     let (agents, posts) = (board.agents.clone(), board.posts.clone());
+    let (linked, calls) = (board.linked.clone(), board.calls.clone());
     StandIn::new(ROOT)
         .binary(env!("CARGO_BIN_EXE_spacesheep"))
         .settings(settings)
@@ -404,6 +419,13 @@ pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn 
         .env("SPACESHEEP_ORIGIN", "http://127.0.0.1:9")
         .env("POINTMAN_SPACESHEEP_FASTER", FASTER)
         .method("agents.sessions", move |_| Ok(json!({"agents": *agents.lock().unwrap()})))
+        .method("core.call", move |params| {
+            calls.lock().unwrap().push(params);
+            match linked.lock().unwrap().clone() {
+                Some(body) => Ok(json!({"status": 200, "body": body})),
+                None => anyhow::bail!("spacesheep may not call GET /v1/node/ext/posts on core"),
+            }
+        })
         .on(move |post: BoardPostRequest| {
             let mut posts = posts.lock().unwrap();
             // each post as the tests read it: its thread's number and its text

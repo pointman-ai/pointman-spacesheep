@@ -13,11 +13,13 @@ use serde_json::Value;
 pub const KEEP_DAYS: i64 = 30;
 pub const KEEP_MAX: usize = 500;
 
-/// A space as `spaces list --json` gives it: its id, and when it last changed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A space as `spaces list --json` gives it: its id, when it last changed, and its name (`@owner/slug`, its short
+/// link's path; "" when it has none).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Space {
     pub id: String,
     pub updated_at: String,
+    pub name: String,
 }
 
 /// One answer of `spaces list --json`: its spaces, and the cursor to the next page (`page.next`, empty on the last).
@@ -30,7 +32,8 @@ pub fn spaces_page(text: &str) -> Option<(Vec<Space>, Option<String>)> {
         rows.iter()
             .filter_map(|r| {
                 let id = r["id"].as_str()?;
-                Some(Space { id: id.to_string(), updated_at: r["updated_at"].as_str().unwrap_or("").to_string() })
+                let text = |k: &str| r[k].as_str().unwrap_or("").to_string();
+                Some(Space { id: id.to_string(), updated_at: text("updated_at"), name: text("name") })
             })
             .collect(),
         next,
@@ -244,6 +247,18 @@ impl Known {
     }
 }
 
+/// The thread a page's link was first posted in, from core's answer to `GET /v1/node/ext/posts?link=…` (the posts
+/// that link it, oldest first: EXT-150, EXT-151): the first post not by `robot`, the extension's own robot, whose
+/// relayed messages link the page too and would otherwise keep a wrong first thread. None when no post links it.
+pub fn linked_thread(answer: &Value, robot: &str) -> Option<i64> {
+    answer["posts"]
+        .as_array()?
+        .iter()
+        .filter(|p| p["author"]["handle"].as_str() != Some(robot))
+        .find_map(|p| p["thread_id"].as_i64())
+        .filter(|t| *t > 0)
+}
+
 /// Seconds since 1970 as a UTC time to the second, the way Spacesheep's `updated_at` starts: "2026-10-23T08:03:10".
 pub fn iso(secs: i64) -> String {
     let (days, s) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
@@ -308,6 +323,7 @@ mod tests {
         assert_eq!(next.as_deref(), Some("50"));
         let want = [("p1", "2026-11-05T10:42:00Z"), ("p2", "2026-11-05T10:41:59.120Z")];
         assert_eq!(got.iter().map(|s| (s.id.as_str(), s.updated_at.as_str())).collect::<Vec<_>>(), want);
+        assert_eq!(got.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["@james/a", ""], "a short link's name");
         // ListVersions: newest first, no number; on someone else's version `client` has only `transport` and `other`
         let versions = r#"{"versions": [
             {"id": "c4", "created_at": "2026-11-04T09:00:00Z", "client": {"name": "claude-code", "session_id": "s-1"}},
@@ -377,15 +393,15 @@ mod tests {
     #[test]
     fn a_page_is_read_again_only_when_it_has_changed() {
         let mut known = Known::default();
-        let p1 = Space { id: "p1".into(), updated_at: "t1".into() };
+        let p1 = Space { id: "p1".into(), updated_at: "t1".into(), ..Default::default() };
         assert!(known.stale(&p1));
         known.read(&p1, who(&["s-1"]));
         assert!(!known.stale(&p1));
-        assert!(known.stale(&Space { id: "p1".into(), updated_at: "t2".into() }));
+        assert!(known.stale(&Space { id: "p1".into(), updated_at: "t2".into(), ..Default::default() }));
         let again = Known::from_json(&known.to_json());
         assert_eq!(again, known);
         assert_eq!(again.publishers(), ["s-1"]);
-        known.read(&Space { id: "p2".into(), updated_at: "t9".into() }, who(&["s-2", "s-1"]));
+        known.read(&Space { id: "p2".into(), updated_at: "t9".into(), ..Default::default() }, who(&["s-2", "s-1"]));
         assert_eq!(known.publishers(), ["s-1", "s-2"], "the newest page's sessions first, its latest first, each once");
     }
 
@@ -432,7 +448,7 @@ mod tests {
             history: h.into_iter().map(|(s, t)| (s.to_string(), t)).collect(),
             latest: BTreeMap::new(),
         };
-        let p1 = Space { id: "p1".into(), updated_at: "t1".into() };
+        let p1 = Space { id: "p1".into(), updated_at: "t1".into(), ..Default::default() };
         let pushed = |s: &str, t: i64| (s.to_string(), iso(t));
         let mut known = Known::default();
         // published by a session on another machine first, then by s-1 here at 100, while it ran in thread 19090
@@ -443,12 +459,15 @@ mod tests {
         let settled = known.settle(&seen(vec![("s-1", moved), ("s-2", vec![(290, 25460)])]));
         assert_eq!(settled, [("p1".to_string(), 19090)], "where s-1 ran when it pushed, not where it is now");
         // a page pushed long before its first session was seen: not pinned, even though a later session's thread is
-        let p2 = Space { id: "p2".into(), updated_at: "t1".into() };
+        let p2 = Space { id: "p2".into(), updated_at: "t1".into(), ..Default::default() };
         known.read(&p2, vec![pushed("s-1", 10), pushed("s-2", 300)]);
         assert_eq!(known.settle(&seen(vec![("s-1", vec![(1000, 19090)]), ("s-2", vec![(290, 25460)])])), []);
         known.0.remove("p2");
         // its agent works in another thread now, and pushes the page again from there: it stays in its own
-        known.read(&Space { id: "p1".into(), updated_at: "t2".into() }, vec![pushed("s-1", 100), pushed("s-3", 400)]);
+        known.read(
+            &Space { id: "p1".into(), updated_at: "t2".into(), ..Default::default() },
+            vec![pushed("s-1", 100), pushed("s-3", 400)],
+        );
         assert_eq!(known.settle(&seen(vec![("s-1", vec![(200, 25460)]), ("s-3", vec![(390, 25460)])])), []);
         assert_eq!(known.threads(), BTreeMap::from([("p1".to_string(), 19090)]));
         let again = Known::from_json(&known.to_json());
@@ -489,7 +508,10 @@ mod tests {
             ("old".to_string(), page("2026-09-23T08:23:09.999Z", "s-4")),
             ("undated".to_string(), page("", "s-5")),
         ]));
-        known.keep(&[Space { id: "listed".into(), updated_at: "2026-08-01T00:00:00Z".into() }], now);
+        known.keep(
+            &[Space { id: "listed".into(), updated_at: "2026-08-01T00:00:00Z".into(), ..Default::default() }],
+            now,
+        );
         assert_eq!(known.0.keys().collect::<Vec<_>>(), ["edge", "left", "listed"], "a listed page stays however old");
 
         let mut many =
@@ -497,5 +519,20 @@ mod tests {
         many.keep(&[], now);
         assert_eq!(many.0.len(), KEEP_MAX);
         assert!(many.0.contains_key("p0000") && !many.0.contains_key(&format!("p{:04}", KEEP_MAX)), "the newest kept");
+    }
+
+    /// Core's posts that link a page, oldest first: the first not by the extension's own robot gives the thread.
+    #[test]
+    fn a_pages_linked_thread_is_the_first_post_not_its_own_relay() {
+        let posts = serde_json::json!({"posts": [
+            {"id": "post_1", "thread_id": 4159, "author": {"handle": "spacesheep"}},
+            {"id": "post_2", "thread_id": 49759, "author": {"handle": "loupe"}},
+            {"id": "post_3", "thread_id": 37227, "author": {"handle": "james"}}]});
+        assert_eq!(linked_thread(&posts, "spacesheep"), Some(49759));
+        assert_eq!(linked_thread(&serde_json::json!({"posts": []}), "spacesheep"), None);
+        let own = serde_json::json!({"posts": [{"thread_id": 4159, "author": {"handle": "spacesheep"}}]});
+        assert_eq!(linked_thread(&own, "spacesheep"), None, "only its own relays: none");
+        assert_eq!(linked_thread(&serde_json::json!({"posts": [{"thread_id": 0}]}), "spacesheep"), None);
+        assert_eq!(linked_thread(&serde_json::json!({"error": {}}), "spacesheep"), None);
     }
 }

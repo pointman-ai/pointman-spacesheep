@@ -7,8 +7,9 @@
 //! or as soon as either changes. A look, while the account's Talk is on: the node's `agents.sessions`, then a
 //! listener for each agent whose session published a page, with a thread, and none for the rest. A listener is a
 //! thread running `spacesheep talk listen --session <id>`, started again with a growing wait whenever it ends. Each
-//! message goes out as a `board.post` in the page's own thread (the one it was published from; else the publisher's
-//! latest), for the agents it starts by calling or else the publisher, in order, from a thread of their own. The
+//! message goes out as a `board.post` in the page's own thread (the one its link was first posted in, as core says;
+//! else the one it was published from; else the publisher's latest), for the agents it starts by calling or else the
+//! publisher, in order, from a thread of their own. The
 //! listeners' process groups are kept in the state folder, so a restart stops any left behind.
 
 use std::collections::BTreeMap;
@@ -20,9 +21,10 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
+use pointman_extension::convert;
 use pointman_extension::protocol::{
-    AgentsSessionsRequest, AgentsSessionsResponse, BoardPostRequest, HealthCheckRequest, HealthCheckResponse,
-    HealthFixRequest, HealthFixResponse,
+    AgentsSessionsRequest, AgentsSessionsResponse, BoardPostRequest, CoreCallRequest, HealthCheckRequest,
+    HealthCheckResponse, HealthFixRequest, HealthFixResponse,
 };
 use pointman_extension::v1::health::{part::State, Action, Part};
 use pointman_extension::v1::ThreadRef;
@@ -68,6 +70,13 @@ const SIGN_IN_AGAIN: Duration = Duration::from_secs(1800);
 /// A post is tried this many times, this far apart.
 const POST_TRIES: u32 = 3;
 const POST_AGAIN: Duration = Duration::from_secs(10);
+/// Where a message's page had its link posted: core's posts that link it, oldest first, read as the extension's own
+/// robot may (`permissions.read`, EXT-151), at most this many, within this long. The robot's handle is the
+/// extension's id: its own relays link the page too, so they don't count.
+const LINKED_POSTS: &str = "/v1/node/ext/posts";
+const LINKED_LIMIT: u32 = 10;
+const LINKED_TIMEOUT: Duration = Duration::from_secs(10);
+const ROBOT: &str = "spacesheep";
 /// A session id as Spacesheep's CLI takes one (lib/talk.js's SESSION_RE).
 fn session_ok(s: &str) -> bool {
     (1..=128).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c))
@@ -404,6 +413,8 @@ struct Status {
     publishers: Vec<String>,
     /// Each page's own thread, where its messages go, by the page's id: the thread it was published from (EXT-128).
     page_threads: BTreeMap<String, i64>,
+    /// Each listed page's name (`@owner/slug`, its short link's path), by its id, as the pages were last read.
+    page_names: BTreeMap<String, String>,
     pages_at: Option<f64>,
     pages_problem: Option<String>,
     account: Account,
@@ -650,14 +661,25 @@ fn deliver(h: &Handle, cli: &Cli, agent: &Agent, text: &str, raw: &str, posts: &
         return;
     }
     let who = to.iter().map(|t| format!("@{t}")).collect::<Vec<_>>().join(" ");
-    // the page's own thread, the one it was published from; else, for a page not read yet, its agent's latest
-    let own = said::page(raw).and_then(|p| lock(status).page_threads.get(&p).copied());
-    let thread = own.unwrap_or(agent.thread);
+    // the page's own thread: the one its link was first posted in (EXT-150); else the one it was published from;
+    // else, for a page not read yet, its agent's latest
+    let page = said::page(raw);
+    let (pinned, name) = {
+        let st = lock(status);
+        let at = |p: &String| (st.page_threads.get(p).copied(), st.page_names.get(p).cloned().unwrap_or_default());
+        page.as_ref().map(at).unwrap_or_default()
+    };
+    let linked = page.as_ref().and_then(|p| where_linked(h, p, &said::page_links(raw, &name)));
+    let thread = linked.or(pinned).unwrap_or(agent.thread);
     h.log(format!(
         "a message on {} for {who} ({} characters): posting it in thread {thread}{}",
         page_of(agent),
         text.chars().count(),
-        if own.is_some() { ", the page's" } else { "" }
+        match (linked, pinned) {
+            (Some(_), _) => ", where the page's link was first posted",
+            (None, Some(_)) => ", the page's (where it was published)",
+            (None, None) => "",
+        }
     ));
     lock(status).last = Some((now(), who.clone()));
     let post = words::post(&to, text);
@@ -1049,12 +1071,13 @@ impl Talk {
             let got = publishers(&h, &cli, &file, &seen);
             let mut st = lock(&status);
             match got {
-                Ok((who, page_threads)) => {
+                Ok((who, page_threads, page_names)) => {
                     if who != st.publishers {
                         look_now.store(true, Ordering::SeqCst);
                     }
                     st.publishers = who;
                     st.page_threads = page_threads;
+                    st.page_names = page_names;
                     st.pages_at = Some(now());
                     st.pages_problem = None;
                 }
@@ -1101,8 +1124,9 @@ fn publishers(
     cli: &Cli,
     file: &std::path::Path,
     seen: &Seen,
-) -> Result<(Vec<String>, BTreeMap<String, i64>), String> {
+) -> Result<(Vec<String>, BTreeMap<String, i64>, BTreeMap<String, String>), String> {
     let list = spaces(cli)?;
+    let names = list.iter().filter(|s| !s.name.is_empty()).map(|s| (s.id.clone(), s.name.clone())).collect();
     let mut known = Known::from_json(&std::fs::read_to_string(file).unwrap_or_default());
     known.keep(&list, now() as i64);
     let stale: Vec<&pages::Space> = list.iter().filter(|s| known.stale(s)).collect();
@@ -1116,7 +1140,44 @@ fn publishers(
         h.log(format!("page {page}'s messages go to thread {thread}, where it was published"));
     }
     let _ = std::fs::write(file, known.to_json());
-    Ok((known.publishers(), known.threads()))
+    Ok((known.publishers(), known.threads(), names))
+}
+
+/// The thread `page`'s link was first posted in, by anyone the extension's robot may read about (EXT-150): core's
+/// answer to [`LINKED_POSTS`] for its `links`. None when no post links it, or core can't say (a node or core from
+/// before EXT-151, or a read it refused): then the page's message goes where it was published, as before.
+fn where_linked(h: &Handle, page: &str, links: &[String]) -> Option<i64> {
+    if links.is_empty() {
+        return None;
+    }
+    let ask = CoreCallRequest {
+        method: "GET".into(),
+        // `limit` in the path, a string as every query value the node sends; `link` a list in `query`, since a path
+        // can't repeat a key (EXT-151)
+        path: format!("{LINKED_POSTS}?limit={LINKED_LIMIT}"),
+        query: convert::to_struct(&json!({ "link": links })).into(),
+        ..Default::default()
+    };
+    match h.request_timeout(&ask, LINKED_TIMEOUT) {
+        Ok(answer) if answer.status == 200 => {
+            let body = answer.body.as_option().map(convert::from_proto).unwrap_or(Value::Null);
+            let thread = pages::linked_thread(&body, ROBOT);
+            if thread.is_none() {
+                h.log(format!("no post links page {page} ({})", links.join(", ")));
+            }
+            thread
+        }
+        Ok(answer) => {
+            let body = answer.body.as_option().map(convert::from_proto).unwrap_or(Value::Null);
+            let why = body["error"]["message"].as_str().unwrap_or("no reason given").to_string();
+            h.log(format!("core couldn't say where page {page}'s link was posted ({}): {why}", answer.status));
+            None
+        }
+        Err(e) => {
+            h.log(format!("couldn't ask core where page {page}'s link was posted: {e:#}"));
+            None
+        }
+    }
 }
 
 /// The account's pages: `spaces list --json --limit=200`, then again `--after` each answer's `page.next` until it's
