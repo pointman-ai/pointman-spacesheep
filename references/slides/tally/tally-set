@@ -7,7 +7,7 @@
 //
 // Data: {title, groups: [{label, room, online}], updated_at}. updated_at is set to now when missing.
 // It does two things at once:
-//   1. pushes the value to the stream sgtm82/tally: every open tab redraws in place;
+//   1. pushes the value to the stream the page declares (tally/room): every open tab redraws in place;
 //   2. saves it into the page's JSON block as a background version, announced as a live patch so open
 //      tabs don't reload: a tab opened later (after the stream's 10 minutes) still shows it.
 // Env: TALLY_SPACE, the page (default: the space in .spacesheep.json, in the current folder or beside this file);

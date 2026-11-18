@@ -48,3 +48,39 @@ test("the page and the command name the same stream by default", () => {
   const stream = html.match(/<meta name="ss-streams" content="([^"]+)">/)[1];
   assert.ok(src.includes(`|| "${stream}"`), "tally-set defaults to " + stream);
 });
+
+// The slide's own model(), run from index.html as it is: what it shows for a tally.
+function pageModel() {
+  const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  const helpers = ["num", "fmt"].map(n => html.match(new RegExp(`^ *function ${n}\\(.*$`, "m"))[0]).join("\n");
+  const body = html.match(/\/\/ model:start[^\n]*\n([\s\S]*?)\/\/ model:end/)[1];
+  return new Function(helpers + "\n" + body + "\nreturn model;")();
+}
+
+test("with every online count 0, the slide shows the room alone", () => {
+  const m = pageModel()(check({ groups: [{ label: "Developers", room: 12 }, { label: "Founders", room: 5, online: 0 }] }));
+  assert.strictEqual(m.showOnline, false);
+  assert.strictEqual(m.total, 17);
+  assert.strictEqual(m.split, "17 in the room");
+  assert.strictEqual(m.note, "");
+  assert.deepStrictEqual(m.rows.map(r => r.roomPct), [100, 5 / 12 * 100]);
+  assert.strictEqual(pageModel()(check({ groups: [] })).showOnline, false, "the empty slide too");
+});
+
+test("one online count shows the Online column, each column to its own scale", () => {
+  const m = pageModel()(check({ groups: [{ label: "Developers", room: 12, online: 0 }, { label: "Founders", room: 5, online: 40 }] }));
+  assert.strictEqual(m.showOnline, true);
+  assert.strictEqual(m.total, 57);
+  assert.strictEqual(m.split, "17 in the room · 40 online");
+  assert.deepStrictEqual(m.rows.map(r => [r.roomPct, r.onlinePct]), [[100, 0], [5 / 12 * 100, 100]]);
+});
+
+test("the room-only layout hides every Online part and is the slide's first state", () => {
+  const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  assert.match(html, /\.room-only \.online\{display:none\}/);
+  assert.match(html, /<main class="slide room-only" id="slide"/);
+  assert.match(html, /classList\.toggle\("room-only", !m\.showOnline\)/);
+  // Every Online part carries the online class: the column's heading and each row's cell.
+  assert.match(html, /<div class="colh online">/);
+  assert.match(html, /cell\("online"\)/);
+});

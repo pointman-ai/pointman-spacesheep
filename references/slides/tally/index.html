@@ -6,7 +6,7 @@
 <meta name="ss-streams" content="tally/room">
 <title>Who's in the room</title>
 <!--
-  A live slide: the room's show of hands, by group, next to the online count.
+  A live slide: the room's show of hands, by group, and the online count beside it once there is one.
   Data: {title, groups: [{label, room, online}], updated_at}.
   It is drawn from two places, whichever is newer:
   - the stream named in ss-streams above (Spacesheep streams): open tabs redraw in place, no reload;
@@ -18,13 +18,13 @@
 <style>
 :root{
   --bg:#fff; --ink:#1b1b22; --ink2:#46464f; --muted:#6a6a73; --line:#e3e3e8; --track:#f0f0f4;
-  --room:#2563eb; --online:#c2410c;
+  --room:#2563eb; --online:var(--ink2);
   --u:min(1vw, 1.7778vh);
 }
 @media (prefers-color-scheme: dark){
   :root{
     --bg:#121317; --ink:#e8e9ee; --ink2:#c2c4cc; --muted:#9a9ca6; --line:#2c2e36; --track:#1d1f26;
-    --room:#7aa7ff; --online:#fb923c;
+    --room:#7aa7ff; --online:var(--ink2);
   }
 }
 *{box-sizing:border-box}
@@ -51,6 +51,9 @@ h1{margin:0;font-size:calc(var(--u)*4.6);line-height:1.05;letter-spacing:-.015em
 .val{font-size:calc(var(--u)*3.4);font-weight:800;text-align:right;line-height:1}
 .empty{grid-column:1/-1;align-self:center;text-align:center;font-size:calc(var(--u)*3);color:var(--muted)}
 footer{display:flex;justify-content:space-between;align-items:baseline;font-size:calc(var(--u)*1.6);color:var(--muted)}
+/* No online counts (every one is 0): the Online column goes, and the room's bars take its width. */
+.room-only .chart{grid-template-columns:minmax(0,.8fr) minmax(0,2fr)}
+.room-only .online{display:none}
 footer .upd b{color:var(--ink2);font-weight:700}
 @media (prefers-reduced-motion: reduce){.bar{transition:none}}
 @media (max-width:640px){
@@ -62,7 +65,7 @@ footer .upd b{color:var(--ink2);font-weight:700}
 </style>
 </head>
 <body>
-<main class="slide" aria-live="polite">
+<main class="slide room-only" id="slide" aria-live="polite">
   <header>
     <div>
       <p class="kicker">Show of hands · live</p>
@@ -70,7 +73,7 @@ footer .upd b{color:var(--ink2);font-weight:700}
     </div>
     <div class="total" data-ss-id="total">
       <span class="n" id="total">0</span>
-      <span class="l" id="split">0 in the room · 0 online</span>
+      <span class="l" id="split">0 in the room</span>
     </div>
   </header>
   <section class="chart" id="chart" role="img" aria-label="Bars: each group's count in the room and online" data-ss-id="chart">
@@ -80,7 +83,7 @@ footer .upd b{color:var(--ink2);font-weight:700}
   </section>
   <footer>
     <span class="upd">Updated <b><time id="updated" datetime="">—</time></b></span>
-    <span id="note">Each column's bars are to its own scale</span>
+    <span id="note"></span>
   </footer>
 </main>
 
@@ -105,34 +108,52 @@ footer .upd b{color:var(--ink2);font-weight:700}
 
   var loaded = new Date();
   function hms(t) { return t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
-  function render(d) {
+  // model:start (a pure function of the data: tally-set.test.js runs it)
+  function model(d) {
     var groups = (d && d.groups) || [];
-    document.getElementById("title").textContent = (d && d.title) || "Who's in the room";
     var room = 0, online = 0, maxR = 0, maxO = 0, i;
     for (i = 0; i < groups.length; i++) {
       var r = num(groups[i].room), o = num(groups[i].online);
       room += r; online += o; if (r > maxR) maxR = r; if (o > maxO) maxO = o;
     }
+    var rows = [];
+    for (i = 0; i < groups.length; i++) {
+      var g = groups[i], gr = num(g.room), go = num(g.online);
+      rows.push({ label: String(g.label == null ? "" : g.label), room: gr, online: go,
+        roomPct: maxR ? gr / maxR * 100 : 0, onlinePct: maxO ? go / maxO * 100 : 0 });
+    }
+    var showOnline = online > 0; // online counts come only if the chat is asked too
+    return {
+      title: (d && d.title) || "Who's in the room", rows: rows, room: room, online: online, showOnline: showOnline,
+      total: room + online,
+      split: fmt(room) + " in the room" + (showOnline ? " · " + fmt(online) + " online" : ""),
+      note: showOnline ? "Each column's bars are to its own scale" : ""
+    };
+  }
+  // model:end
+  function render(d) {
+    var m = model(d), i;
+    document.getElementById("title").textContent = m.title;
+    document.getElementById("slide").classList.toggle("room-only", !m.showOnline);
     // Rows: add or remove only what changed, then set the numbers in place.
     var empty = chart.querySelector(".empty");
-    if (!groups.length && !empty) { empty = el("empty", chart); empty.textContent = "Waiting for the first count"; }
-    if (groups.length && empty) empty.remove();
-    while (rows.length > groups.length) { var x = rows.pop(); x.label.remove(); x.room.c.remove(); x.online.c.remove(); }
-    while (rows.length < groups.length) rows.push({ label: el("label", chart), room: cell("room"), online: cell("online") });
-    for (i = 0; i < groups.length; i++) {
-      var g = groups[i], row = rows[i], gr = num(g.room), go = num(g.online);
-      var lab = String(g.label == null ? "" : g.label);
-      if (row.label.textContent !== lab) row.label.textContent = lab;
-      row.room.v.textContent = fmt(gr);
-      row.online.v.textContent = fmt(go);
-      row.room.bar.style.width = (maxR ? gr / maxR * 100 : 0) + "%";
-      row.online.bar.style.width = (maxO ? go / maxO * 100 : 0) + "%";
+    if (!m.rows.length && !empty) { empty = el("empty", chart); empty.textContent = "Waiting for the first count"; }
+    if (m.rows.length && empty) empty.remove();
+    while (rows.length > m.rows.length) { var x = rows.pop(); x.label.remove(); x.room.c.remove(); x.online.c.remove(); }
+    while (rows.length < m.rows.length) rows.push({ label: el("label", chart), room: cell("room"), online: cell("online") });
+    for (i = 0; i < m.rows.length; i++) {
+      var g = m.rows[i], row = rows[i];
+      if (row.label.textContent !== g.label) row.label.textContent = g.label;
+      row.room.v.textContent = fmt(g.room);
+      row.online.v.textContent = fmt(g.online);
+      row.room.bar.style.width = g.roomPct + "%";
+      row.online.bar.style.width = g.onlinePct + "%";
     }
-    chart.style.gridTemplateRows = "auto repeat(" + Math.max(groups.length, 1) + ", minmax(0,1fr))";
-    document.getElementById("total").textContent = fmt(room + online);
-    document.getElementById("split").textContent = fmt(room) + " in the room · " + fmt(online) + " online";
-    document.getElementById("room-total").textContent = fmt(room);
-    document.getElementById("online-total").textContent = fmt(online);
+    chart.style.gridTemplateRows = "auto repeat(" + Math.max(m.rows.length, 1) + ", minmax(0,1fr))";
+    document.getElementById("total").textContent = fmt(m.total);
+    document.getElementById("split").textContent = m.split;
+    document.getElementById("room-total").textContent = fmt(m.room);
+    document.getElementById("online-total").textContent = fmt(m.online);
     var t = document.getElementById("updated"), ts = stamp(d);
     if (ts) {
       t.setAttribute("datetime", new Date(ts).toISOString());
@@ -141,7 +162,7 @@ footer .upd b{color:var(--ink2);font-weight:700}
     // A test value (debug: true) says how long after it was set it reached the screen, and when this tab loaded.
     var note = document.getElementById("note");
     if (d && d.debug && ts) note.textContent = "Test: on screen " + ((Date.now() - ts) / 1000).toFixed(2) + " s after it was set · tab loaded " + hms(loaded);
-    else note.textContent = "Each column's bars are to its own scale";
+    else note.textContent = m.note;
   }
 
   // Draw a value only if it is at least as new as what's on screen.
