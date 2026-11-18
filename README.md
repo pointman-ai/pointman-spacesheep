@@ -119,6 +119,29 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   permission rules still apply, and `SKILL.md` tells agents to trust such a post only when this machine posted it
   (anyone on the board can type its first line), and to ask in the thread before anything risky.
 
+## A live tally slide
+
+`references/slides/tally/` is a slide that updates while it's on screen: "Who's in the room", one bar per group
+with the room's count beside the online count, a big total and the time it was set. It's 16:9 and fills a
+1920×1080 screen, light or dark. An agent sets it with one command:
+
+```
+TALLY_SPACE=<page link or uuid> references/slides/tally/tally-set \
+  '{"groups":[{"label":"Developers","room":14,"online":212},{"label":"Founders","room":9,"online":87}]}'
+```
+
+- **Live:** the value goes to the page's stream (Spacesheep streams, `<meta name="ss-streams">`). Every open tab
+  redraws in place, with no reload, about 1–2 s after the command starts (most of it is `npx` starting).
+- **Kept:** a stream keeps only its last 10 minutes, so the command also saves the value into the page's
+  `tally-data` block. The save is a background version, announced as a live patch, so open tabs don't reload. A
+  tab opened later draws the saved value.
+- **Data:** `{title?, groups: [{label, room, online}], updated_at?}`, at most 8 groups; `updated_at` is now when
+  left out. A tab only draws a value at least as new as the one it shows. `--debug` makes the footer say how long
+  the value took to reach the screen (a test, not for the room).
+- **Setting up a page:** deploy `index.html` as its own page. A second slide on the same account needs its own
+  stream name: change `ss-streams` in its page and pass the same name as `TALLY_STREAM`.
+- `node --test references/slides/tally/` runs its tests.
+
 ## Health
 
 | Part | ok | not ok |
@@ -160,7 +183,7 @@ the one switch.
 |---|---|
 | `extension.toml` | The manifest: `[run]` beside `[behavior]`, the permissions (`agents`, `post`, the CLI's rules) and how the apps draw page links |
 | `SKILL.md` | The guidance, in the standard skill format (frontmatter, then the body), so it works as an ordinary skill outside Pointman too |
-| `references/` | Shipped with the behaviour and handed to every run: `pages.md` (how to write a page people take in: 15 researched rules with sources), `check.py` (the checker agents run before each deploy; `python3 -m unittest` runs its tests) and `template.html` (a starter that passes it) |
+| `references/` | Shipped with the behaviour and handed to every run: `pages.md` (how to write a page people take in: 15 researched rules with sources), `check.py` (the checker agents run before each deploy; `python3 -m unittest` runs its tests) and `template.html` (a starter that passes it); `slides/tally/`, the live tally slide and its command |
 | `src/main.rs` | The process: the looks, the listeners, the posts and health |
 | `src/cli.rs`, `src/said.rs`, `src/pages.rs`, `src/words.rs` | Finding and stopping the CLI, reading what `talk listen` prints, who published each page, and the post's words (and whom a message calls) |
 | `src/signin.rs` | Signing a machine in with the vault's key: a key of its own, minted and kept |
