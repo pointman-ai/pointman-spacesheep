@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+// Set the "Who's in the room" slide.
+//
+//   tally-set '{"title":"Who's in the room","groups":[{"label":"Developers","room":12,"online":140}]}'
+//   tally-set data.json        (or - for stdin)
+//   tally-set --debug …        a test: the footer shows how long it took to reach the screen
+//
+// Data: {title, groups: [{label, room, online}], updated_at}. updated_at is set to now when missing.
+// It does two things at once:
+//   1. pushes the value to the stream the page declares (tally/room): every open tab redraws in place;
+//   2. saves it into the page's JSON block as a background version, announced as a live patch so open
+//      tabs don't reload: a tab opened later (after the stream's 10 minutes) still shows it.
+// Env: TALLY_SPACE, the page (default: the space in .spacesheep.json, in the current folder or beside this file);
+//      TALLY_STREAM, the stream the page declares (default tally/room); TALLY_SAVE=0 to skip step 2.
+"use strict";
+const fs = require("fs");
+const path = require("path");
+const { execFile } = require("child_process");
+
+const STREAM = process.env.TALLY_STREAM || "tally/room";
+function space() {
+  if (process.env.TALLY_SPACE) return process.env.TALLY_SPACE;
+  for (const dir of [process.cwd(), __dirname]) {
+    try { return JSON.parse(fs.readFileSync(path.join(dir, ".spacesheep.json"), "utf8")).space; } catch (e) {}
+  }
+  die("which page? set TALLY_SPACE to its link or uuid");
+}
+const CLI = ["-y", "spacesheep@latest"];
+
+class Bad extends Error {}
+function die(msg) { throw new Bad(msg); }
+
+function read(arg) {
+  if (!arg) die("give the data as JSON, a file, or - for stdin");
+  if (arg === "-") return fs.readFileSync(0, "utf8");
+  if (arg.trim().startsWith("{")) return arg;
+  return fs.readFileSync(arg, "utf8");
+}
+
+function check(d) {
+  if (!d || typeof d !== "object" || Array.isArray(d)) die("data must be an object");
+  if (!Array.isArray(d.groups)) die("groups must be a list");
+  const groups = d.groups.map((g, i) => {
+    if (!g || typeof g.label !== "string" || !g.label.trim()) die(`groups[${i}].label must be text`);
+    for (const k of ["room", "online"]) {
+      const v = g[k] == null ? 0 : g[k];
+      if (!Number.isInteger(v) || v < 0) die(`groups[${i}].${k} must be a whole number, 0 or more`);
+    }
+    return { label: g.label.trim(), room: g.room || 0, online: g.online || 0 };
+  });
+  if (groups.length > 8) die("at most 8 groups fit the slide");
+  const at = d.updated_at ? new Date(d.updated_at) : new Date();
+  if (isNaN(at)) die("updated_at must be an ISO time");
+  const out = { title: typeof d.title === "string" && d.title.trim() ? d.title.trim() : "Who's in the room", groups, updated_at: at.toISOString() };
+  // --debug: the slide's footer shows how long the value took to reach the screen (a test, never in the room).
+  if (process.argv.includes("--debug")) out.debug = true;
+  return out;
+}
+
+function npx(args, input) {
+  return new Promise((resolve, reject) => {
+    const p = execFile("npx", CLI.concat(args), { maxBuffer: 1 << 24 }, (err, out, errOut) => {
+      if (err) reject(new Error((errOut || out || err.message).trim())); else resolve(out);
+    });
+    if (input != null) { p.stdin.end(input); }
+  });
+}
+
+// The JSON block as it is in the page now, so the replacement names its exact text.
+const BLOCK = /<script type="application\/json" id="tally-data" data-ss-id="tally-data">[^<]*<\/script>/;
+function block(json) {
+  // Keep "</" out of the block, so a label can't end the script early.
+  return '<script type="application/json" id="tally-data" data-ss-id="tally-data">' + json.replace(/</g, "\\u003c") + "</script>";
+}
+
+async function save(d) {
+  const SPACE = space();
+  const page = await npx(["call", "get_file", "space=" + SPACE, "file=index.html"]);
+  let html;
+  try { const j = JSON.parse(page); html = j.content || j.text || (j.file && j.file.content) || page; } catch (e) { html = page; }
+  const m = html.match(BLOCK);
+  if (!m) throw new Error("the page has no tally-data block");
+  const next = block(JSON.stringify(d));
+  if (m[0] === next) return "unchanged";
+  const call = {
+    space: SPACE,
+    label: "Tally " + d.updated_at.slice(11, 19) + " UTC",
+    background: true,
+    replacements: [{ path: "index.html", old_string: m[0], new_string: next }],
+    live_patch: [{ anchor: "tally-data", op: "replace", html: next }],
+  };
+  const out = await npx(["call", "create_version", "-"], JSON.stringify(call));
+  try { const j = JSON.parse(out); return "saved " + ((j.version && j.version.id) || "").slice(0, 12); } catch (e) { return "saved"; }
+}
+
+async function main() {
+  const d = check(JSON.parse(read(process.argv.slice(2).filter(a => a !== "--debug")[0])));
+  const value = JSON.stringify(d);
+  const t0 = Date.now();
+  // `stream <name>` with the value on stdin: one push, then it exits when stdin closes. (`streams push`
+  // is refused for a full key: "can't be called with this kind of connection".)
+  const push = npx(["stream", STREAM], value + "\n")
+    .then(() => console.log(`pushed to ${STREAM} in ${Date.now() - t0} ms`));
+  const keep = process.env.TALLY_SAVE === "0" ? Promise.resolve("skipped")
+    : save(d).then(s => console.log(`${s} in ${Date.now() - t0} ms`));
+  const r = await Promise.allSettled([push, keep]);
+  const bad = r.filter(x => x.status === "rejected");
+  for (const b of bad) console.error("tally-set: " + b.reason.message);
+  console.log(JSON.stringify({ updated_at: d.updated_at, total: d.groups.reduce((s, g) => s + g.room + g.online, 0) }));
+  return bad.length ? 1 : 0;
+}
+
+module.exports = { check, block, BLOCK };
+if (require.main === module) {
+  main().then(code => process.exit(code), e => { console.error("tally-set: " + e.message); process.exit(1); });
+}
