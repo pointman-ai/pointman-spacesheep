@@ -61,7 +61,7 @@ test("with every online count 0, the slide shows the room alone", () => {
   const m = pageModel()(check({ groups: [{ label: "Developers", room: 12 }, { label: "Founders", room: 5, online: 0 }] }));
   assert.strictEqual(m.showOnline, false);
   assert.strictEqual(m.total, 17);
-  assert.strictEqual(m.split, "17 in the room");
+  assert.strictEqual(m.split, "in the room", "the total above is the room: not said twice");
   assert.strictEqual(m.note, "");
   assert.deepStrictEqual(m.rows.map(r => r.roomPct), [100, 5 / 12 * 100]);
   assert.strictEqual(pageModel()(check({ groups: [] })).showOnline, false, "the empty slide too");
