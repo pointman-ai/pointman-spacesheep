@@ -73,7 +73,7 @@ footer .upd b{color:var(--ink2);font-weight:700}
     </div>
     <div class="total" data-ss-id="total">
       <span class="n" id="total">0</span>
-      <span class="l" id="split">0 in the room</span>
+      <span class="l" id="split">in the room</span>
     </div>
   </header>
   <section class="chart" id="chart" role="img" aria-label="Bars: each group's count in the room and online" data-ss-id="chart">
@@ -126,7 +126,7 @@ footer .upd b{color:var(--ink2);font-weight:700}
     return {
       title: (d && d.title) || "Who's in the room", rows: rows, room: room, online: online, showOnline: showOnline,
       total: room + online,
-      split: fmt(room) + " in the room" + (showOnline ? " · " + fmt(online) + " online" : ""),
+      split: showOnline ? fmt(room) + " in the room · " + fmt(online) + " online" : "in the room", // room only: the total is the room
       note: showOnline ? "Each column's bars are to its own scale" : ""
     };
   }
