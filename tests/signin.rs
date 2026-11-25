@@ -43,7 +43,8 @@ fn a_signed_out_machine_signs_itself_in_with_the_vaults_key() {
     let node =
         spacesheep(&fake, &board, on()).machine("mac-m4").secret("spacesheep.key", record(VAULT_KEY)).start().unwrap();
 
-    assert!(wait(WITHIN, || fake.saved_key().is_some()), "kept a key: {:?}", fake.calls());
+    // the file is there, empty, before the fake CLI has written the key into it
+    assert!(wait(WITHIN, || fake.saved_key().is_some_and(|k| !k.is_empty())), "kept a key: {:?}", fake.calls());
     assert_eq!(fake.parent_key().as_deref(), Some(VAULT_KEY), "minted with the vault's key, in SPACESHEEP_KEY");
     let saved = fake.saved_key().unwrap();
     assert!(saved.trim().starts_with("ss_minted") && saved.ends_with('\n'), "the minted key, on stdin: {saved:?}");
@@ -134,7 +135,7 @@ fn a_minted_key_that_isnt_kept_is_saved_at_the_next_try_and_no_other_is_minted()
     assert!(unsaved.len() == 1 && unsaved[0].starts_with("ss_minted"), "{unsaved:?}");
 
     fake.save_fails(false);
-    assert!(wait(Duration::from_secs(45), || fake.saved_key().is_some()), "{:?}", fake.calls());
+    assert!(wait(Duration::from_secs(45), || fake.saved_key().is_some_and(|k| !k.is_empty())), "{:?}", fake.calls());
     assert_eq!(fake.saved_key().unwrap().trim(), unsaved[0], "the key minted first is the one kept");
     let creates = fake.calls().iter().filter(|c| c.contains("keys create")).count();
     assert_eq!(creates, 1, "no other key minted: {:?}", fake.calls());
