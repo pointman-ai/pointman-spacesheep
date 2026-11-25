@@ -4,7 +4,7 @@ A Pointman extension that has agents write documents, reports and explainers as
 [Spacesheep](https://spacesheep.dev) pages, published with Spacesheep's CLI and opened beside the thread for
 the person they're working for. Spacesheep publishes pages and sites at a URL people open on any device. With
 **Talk** on, a message typed in a page's Session tab reaches the agent that published it (or the agents it starts by calling), as a post in its
-thread, and the agent answers there and on the page.
+channel, and the agent answers there and on the page.
 
 ```
 pointman add spacesheep
@@ -46,7 +46,7 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   its versions (`versions list --space-id <page> --json --limit=200`, then `--after=<page.next>` until it's empty: each version's
   `client.session_id`; an empty or missing one is another account's version), kept in the state folder
   (`pages.json`). A page that leaves the list is kept for 30 days from its last change,
-  up to 500 pages: a burst of other pages (core's docs job updates dozens at once) doesn't silence it. Every 60 s it reads the node's agents (`agents.sessions`), and for each publisher with a thread
+  up to 500 pages: a burst of other pages (core's docs job updates dozens at once) doesn't silence it. Every 60 s it reads the node's agents (`agents.sessions`), and for each publisher with a channel
   it runs `spacesheep talk listen --session <id>` (the machine's `spacesheep`, else `npx -y spacesheep@latest`),
   signed in with the machine's own key in `~/.config/spacesheep`. With npx, it asks npx where its copy of
   `spacesheep@latest` is (`npx -y -p spacesheep@latest -c 'command -v spacesheep'`, hourly, which also brings the
@@ -56,15 +56,15 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   5 s, doubling to 5 minutes. An agent with a new session, or Talk turned off, has its listener stopped. Each
   listener is a process group of its own, kept in the state folder (`listeners.json`), so a restart stops any left
   from a crash.
-- **Each message** is a `board.post` in the page's own thread, as the extension's robot account: the thread the
+- **Each message** is a `board.post` in the page's own channel, as the extension's robot account: the channel the
   page's link was first posted in (EXT-150). The extension asks core for the posts that link the page, by its
   `/space/<id>` link and its short `@owner/slug` one, oldest first, as its robot may read them (`permissions.read`,
   `core.call GET /v1/node/ext/posts`), and takes the first that isn't one of its own relays. **The fallback,** when no
-  post it may read links the page, or the node or core can't say (one from before EXT-151): the thread the first
+  post it may read links the page, or the node or core can't say (one from before EXT-151): the channel the first
   session here that pushed it was running in when it did (its first version's `created_at`, against that session's
-  threads as each look saw them, kept in `threads.json`), set once in `pages.json`, so a page's comments stay with it
-  when its agent goes on to work in another thread. A session seen before 0.8.2 kept that history counts its last
-  known thread. A page not read yet goes to the thread of the publisher's latest run. Its mention wakes the publisher:
+  channels as each look saw them, kept in `threads.json`), set once in `pages.json`, so a page's comments stay with it
+  when its agent goes on to work in another channel. A session seen before 0.8.2 kept that history counts its last
+  known channel. A page not read yet goes to the channel of the publisher's latest run. Its mention wakes the publisher:
 
   ````
   @scene
@@ -93,11 +93,11 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   it. Without `--to` that line answers the newest message waiting, so the note says to use it only when this is the
   one.
 - **Pages from an earlier session** (its agent despawned, or moved on to a new session): the extension remembers each
-  agent's session and thread (`agents.json` in the state folder) and keeps listening on the 10 such pages changed most
+  agent's session and channel (`agents.json` in the state folder) and keeps listening on the 10 such pages changed most
   recently. Only sessions an agent here once had count: every node reads the same account's pages, so another node's
   agents and the person's own sessions are left alone. When the page's agent is still here in a new session, its
-  messages reach the agent in the page's own thread, as on a page of its current session; replies still name the page's
-  own session. Otherwise a message that calls agents reaches them in the page's thread, and one that calls nobody gets
+  messages reach the agent in the page's own channel, as on a page of its current session; replies still name the page's
+  own session. Otherwise a message that calls agents reaches them in the page's channel, and one that calls nobody gets
   a reply on the page saying the agent has finished and how to ask another.
 - **A session that ends before its page is found:** the page scan runs every five minutes, so a session can end
   before its page is listed. Sessions seen here stay in `agents.json` for 30 minutes after they were last seen, and a
@@ -109,7 +109,7 @@ sessionpipe. The spec: https://spacesheep.dev/@james/spacesheep-talk-through-the
   the page: it arrives as a Talk message, and the agent's `talk reply` is posted under the comment. Only the page's
   owner can ask (Spacesheep's rule), so someone else's comment can't wake an agent. No sign-in beyond the machine's.
 - **Calling an agent:** a message that starts with handles (`@editor cut the intro`, `@editor, @scene: …`, or
-  `@pm.editor` / `@pointman.editor`) is for those agents instead, any agent on the board, in the same thread. In a comment write
+  `@pm.editor` / `@pointman.editor`) is for those agents instead, any agent on the board, in the same channel. In a comment write
   `@session @pm.editor …`: a bare `@editor` there is also a mention of a Spacesheep user called editor. Then: "@editor from spacesheep.dev (Session tab of
   `@scene`'s page, not signed):", the publisher in code so naming it doesn't wake it too. Its reply line still names the page's session, so @editor's answer shows on
   @scene's page. A handle later in the message stays in the fence. Spacesheep doesn't document the message's JSON: its words are `text`, else
