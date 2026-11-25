@@ -57,7 +57,7 @@ fn session_tab_words_that_look_like_a_comment_footer_are_kept() {
 }
 
 #[test]
-fn a_message_becomes_one_post_in_the_agents_thread_fenced() {
+fn a_message_becomes_one_post_in_the_agents_channel_fenced() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
     fake.published("s-1");
     fake.prints("s-1", &format!("{MESSAGE}\n"));
@@ -65,7 +65,7 @@ fn a_message_becomes_one_post_in_the_agents_thread_fenced() {
 
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
-    assert_eq!(got[0]["thread_id"], 41);
+    assert_eq!(got[0]["channel_id"], 41);
     assert_eq!(got[0]["text"], "@scene\n\n```\nCan you make the header blue?\n```");
     assert!(
         node.log().contains(&format!("the first message's JSON, as talk listen printed it: {MESSAGE}")),
@@ -113,7 +113,7 @@ fn a_mention_inside_the_message_stays_inside_the_fence() {
 }
 
 #[test]
-fn a_message_starting_with_handles_wakes_those_agents_in_the_pages_thread() {
+fn a_message_starting_with_handles_wakes_those_agents_in_the_pages_channel() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
     fake.published("s-1");
     let words = "@pm.editor @Scene2, cut the intro and tell @james";
@@ -122,7 +122,7 @@ fn a_message_starting_with_handles_wakes_those_agents_in_the_pages_thread() {
 
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
-    assert_eq!(got[0]["thread_id"], 41, "the page's thread");
+    assert_eq!(got[0]["channel_id"], 41, "the page's channel");
     let text = got[0]["text"].as_str().unwrap();
     assert!(text.starts_with("@editor @scene2\n\n"), "{text}");
     assert_eq!(mentioned(text), ["editor", "scene2"], "those two, not @scene or @james: {text}");
@@ -151,11 +151,11 @@ fn only_agents_whose_session_published_a_page_are_listened_for() {
         fake.calls()
     );
 
-    // quiet publishes a page: at the next read of the pages it's listened for, and its message posts in its thread
+    // quiet publishes a page: at the next read of the pages it's listened for, and its message posts in its channel
     fake.published("s-2");
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
-    assert_eq!(got[0]["thread_id"], 42);
+    assert_eq!(got[0]["channel_id"], 42);
     assert!(got[0]["text"].as_str().unwrap().starts_with("@quiet\n\n"), "{}", got[0]["text"]);
     let reads = fake.calls().iter().filter(|c| *c == "versions list --space-id page-s-1 --json --limit=200").count();
     assert_eq!(reads, 1, "a page unchanged isn't read again: {:?}", fake.calls());
@@ -171,7 +171,7 @@ fn a_page_published_through_the_new_api_is_listened_for() {
 
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
-    assert_eq!(got[0]["thread_id"], 41);
+    assert_eq!(got[0]["channel_id"], 41);
     assert!(got[0]["text"].as_str().unwrap().starts_with("@scene\n\n"), "{}", got[0]["text"]);
     assert_eq!(fake.listens("s-1"), 1, "{:?}", fake.calls());
 }
@@ -192,7 +192,7 @@ fn a_page_whose_versions_come_in_two_pages_is_read_to_its_last() {
 
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
-    assert_eq!(got[0]["thread_id"], 41);
+    assert_eq!(got[0]["channel_id"], 41);
     let want = [
         "versions list --space-id page-s-1 --json --limit=200",
         "versions list --space-id page-s-1 --json --limit=200 --after=c1",
@@ -221,7 +221,7 @@ fn a_read_that_cant_reach_the_last_page_keeps_nothing_and_recovers_with_the_page
     fake.older_page("s-1", "c1", "");
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
-    assert_eq!(got[0]["thread_id"], 41);
+    assert_eq!(got[0]["channel_id"], 41);
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn npxs_copy_runs_with_node_so_no_npm_exec_stays_under_each_listener() {
 }
 
 #[test]
-fn messages_go_to_the_thread_of_the_agents_latest_run() {
+fn messages_go_to_the_channel_of_the_agents_latest_run() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
     fake.published("s-1");
     fake.published("s-2");
@@ -407,7 +407,7 @@ fn messages_go_to_the_thread_of_the_agents_latest_run() {
     fake.push("s-1", &format!("{MESSAGE}\n"));
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
-    assert_eq!(got[0]["thread_id"], 52);
+    assert_eq!(got[0]["channel_id"], 52);
     assert_eq!(fake.listens("s-1"), 1, "the same listener: {:?}", fake.calls());
 
     // a new session: its listener starts, and the old session's page is still listened on, as a finished agent's
@@ -419,52 +419,52 @@ fn messages_go_to_the_thread_of_the_agents_latest_run() {
 }
 
 #[test]
-fn a_pages_messages_stay_in_the_thread_it_was_published_from() {
+fn a_pages_messages_stay_in_the_channel_it_was_published_from() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
     fake.published("s-1");
     let node = spacesheep(&fake, &board, on()).start().unwrap();
-    let settled = "page page-s-1's messages go to thread 41, where it was published";
+    let settled = "page page-s-1's messages go to channel 41, where it was published";
     assert!(wait(WITHIN * 2, || node.log().contains(settled)), "{}", node.log());
 
-    // scene goes on to work in thread 52, in the same session: its page's messages stay in 41
+    // scene goes on to work in channel 52, in the same session: its page's messages stay in 41
     board.set_agents(vec![agent("scene", "s-1", 52)]);
     std::thread::sleep(Duration::from_millis(2500)); // a look or two
     let on_page = json!({"message": "is this still right?", "space_uuid": "page-s-1", "id": 7});
     fake.push("s-1", &format!("{on_page}\n"));
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
-    assert_eq!(got[0]["thread_id"], 41, "the page's own thread: {}", node.log());
+    assert_eq!(got[0]["channel_id"], 41, "the page's own channel: {}", node.log());
 
-    // a message whose page isn't known goes to scene's latest thread, as before
+    // a message whose page isn't known goes to scene's latest channel, as before
     fake.push("s-1", &format!("{MESSAGE}\n"));
     let got = board.wait_posts(WITHIN, |p| p.len() == 2);
     assert_eq!(got.len(), 2, "{}", node.log());
-    assert_eq!(got[1]["thread_id"], 52);
+    assert_eq!(got[1]["channel_id"], 52);
 }
 
-/// A page's messages go to the thread its link was first posted in, as core says (EXT-150): scene's session publishes
-/// it while its latest thread is 41, posts its link in 77, and works on in 52. The relay's own earlier post links the
+/// A page's messages go to the channel its link was first posted in, as core says (EXT-150): scene's session publishes
+/// it while its latest channel is 41, posts its link in 77, and works on in 52. The relay's own earlier post links the
 /// page too and doesn't count. With no post linking it, or a node that can't ask core, they go where it was published.
 #[test]
 fn a_pages_messages_go_where_its_link_was_first_posted() {
     let (fake, board) = (Fake::new(), Board::with(vec![agent("scene", "s-1", 41)]));
     fake.published("s-1");
     let node = spacesheep(&fake, &board, on()).start().unwrap();
-    let settled = "page page-s-1's messages go to thread 41, where it was published";
+    let settled = "page page-s-1's messages go to channel 41, where it was published";
     assert!(wait(WITHIN * 2, || node.log().contains(settled)), "{}", node.log());
     board.set_agents(vec![agent("scene", "s-1", 52)]);
     std::thread::sleep(Duration::from_millis(2500)); // a look or two
     board.links(json!({"posts": [
-        {"id": "post_5", "thread_id": 41, "author": {"id": "mem_9", "handle": "spacesheep"}},
-        {"id": "post_6", "thread_id": 77, "author": {"id": "mem_2", "handle": "scene"}},
-        {"id": "post_8", "thread_id": 52, "author": {"id": "mem_2", "handle": "scene"}}]}));
+        {"id": "post_5", "channel_id": 41, "author": {"id": "mem_9", "handle": "spacesheep"}},
+        {"id": "post_6", "channel_id": 77, "author": {"id": "mem_2", "handle": "scene"}},
+        {"id": "post_8", "channel_id": 52, "author": {"id": "mem_2", "handle": "scene"}}]}));
     let url = "https://spacesheep.dev/space/page-s-1";
     let on_page = |n: i64| format!("{}\n", json!({"message": format!("note {n}"), "space_url": url, "id": n}));
     fake.push("s-1", &on_page(7));
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
-    assert_eq!(got[0]["thread_id"], 77, "where its link was first posted: {}", node.log());
-    assert!(node.log().contains("posting it in thread 77, where the page's link was first posted"), "{}", node.log());
+    assert_eq!(got[0]["channel_id"], 77, "where its link was first posted: {}", node.log());
+    assert!(node.log().contains("posting it in channel 77, where the page's link was first posted"), "{}", node.log());
     let asked: Vec<Value> =
         board.core_calls().into_iter().filter(|c| c["path"] == "/v1/node/ext/posts?limit=50").collect();
     assert_eq!(asked.len(), 1, "{:?}", board.core_calls());
@@ -476,14 +476,14 @@ fn a_pages_messages_go_where_its_link_was_first_posted() {
     board.links(json!({"posts": []}));
     fake.push("s-1", &on_page(8));
     let got = board.wait_posts(WITHIN, |p| p.len() == 2);
-    assert_eq!(got.get(1).map(|p| p["thread_id"].clone()), Some(json!(41)), "{}", node.log());
+    assert_eq!(got.get(1).map(|p| p["channel_id"].clone()), Some(json!(41)), "{}", node.log());
     assert!(node.log().contains("no post links page page-s-1"), "{}", node.log());
 
     // a node from before EXT-151 refuses the call: the same
     *board.linked.lock().unwrap() = None;
     fake.push("s-1", &on_page(9));
     let got = board.wait_posts(WITHIN, |p| p.len() == 3);
-    assert_eq!(got.get(2).map(|p| p["thread_id"].clone()), Some(json!(41)), "{}", node.log());
+    assert_eq!(got.get(2).map(|p| p["channel_id"].clone()), Some(json!(41)), "{}", node.log());
     assert!(node.log().contains("couldn't ask core where page page-s-1's link was posted"), "{}", node.log());
 }
 
@@ -502,7 +502,7 @@ fn a_finished_agents_page_reaches_only_the_agents_it_calls() {
     fake.push("s-d", &format!("{message}\n"));
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
-    assert_eq!(got[0]["thread_id"], 41, "the page's own thread, remembered");
+    assert_eq!(got[0]["channel_id"], 41, "the page's own channel, remembered");
     let text = got[0]["text"].as_str().unwrap();
     let header = "@editor\n\n";
     assert!(text.starts_with(header), "{text}");
@@ -606,7 +606,7 @@ fn a_page_pushed_out_of_the_latest_list_still_reaches_its_agent() {
     fake.push("s-1", &format!("{MESSAGE}\n"));
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{}", node.log());
-    assert_eq!(got[0]["thread_id"], 41);
+    assert_eq!(got[0]["channel_id"], 41);
     assert_eq!(fake.listens("s-1"), 1, "the same listener all along: {:?}", fake.calls());
 }
 
@@ -677,7 +677,7 @@ fn a_page_discovered_after_its_publishing_session_ends_still_reaches_the_current
     fake.published("s-publisher");
     let posts = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(posts.len(), 1, "{}", node.log());
-    assert_eq!(posts[0]["thread_id"], 42);
+    assert_eq!(posts[0]["channel_id"], 42);
     assert!(posts[0]["text"].as_str().unwrap().starts_with("@scene"));
 }
 
@@ -699,7 +699,7 @@ fn the_spaces_of_an_account_are_read_to_the_last_page_and_each_pages_versions_wi
 
     let got = board.wait_posts(WITHIN, |p| !p.is_empty());
     assert_eq!(got.len(), 1, "{:?}\n{}", fake.calls(), node.log());
-    assert_eq!(got[0]["thread_id"], 41);
+    assert_eq!(got[0]["channel_id"], 41);
     assert_eq!(
         calls_starting(&fake, "spaces "),
         ["spaces list --json --limit=200", "spaces list --json --limit=200 --after=c1"],

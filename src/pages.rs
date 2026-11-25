@@ -82,17 +82,17 @@ pub fn sessions(versions: &[Value]) -> Vec<(String, String)> {
     out
 }
 
-/// Where this node has seen each of its sessions' agents run, for a page's own thread (EXT-128).
+/// Where this node has seen each of its sessions' agents run, for a page's own channel (EXT-128).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Seen {
-    /// Each session's threads as the looks saw them, oldest first: from when (seconds since 1970), which thread.
+    /// Each session's channels as the looks saw them, oldest first: from when (seconds since 1970), which channel.
     pub history: BTreeMap<String, Vec<(i64, i64)>>,
-    /// Each session's last thread known (agents.json): for one not seen since 0.8.2 began keeping its history.
+    /// Each session's last channel known (agents.json): for one not seen since 0.8.2 began keeping its history.
     pub latest: BTreeMap<String, i64>,
 }
 
-/// How long before a session was first seen a push still counts in that first thread: a look sees a new session
-/// within a minute, so a page pushed straight after its agent woke is its first thread's.
+/// How long before a session was first seen a push still counts in that first channel: a look sees a new session
+/// within a minute, so a page pushed straight after its agent woke is its first channel's.
 pub const FIRST_SEEN_GRACE: i64 = 120;
 
 impl Seen {
@@ -101,12 +101,12 @@ impl Seen {
         self.history.get(session).is_some_and(|h| !h.is_empty()) || self.latest.get(session).is_some_and(|t| *t > 0)
     }
 
-    /// The thread this session's agent was running in when it pushed (`at`, Spacesheep's `created_at`): the last one
+    /// The channel this session's agent was running in when it pushed (`at`, Spacesheep's `created_at`): the last one
     /// seen from then or before, or the first seen for a push up to FIRST_SEEN_GRACE before it (or with no time).
     /// None for an earlier push: where it ran then wasn't seen, so nothing is pinned (shipwright's review). A session
-    /// with no history (seen before 0.8.2 kept it, and not running since) has its last known thread.
-    pub fn thread_at(&self, session: &str, at: &str) -> Option<i64> {
-        let thread = match self.history.get(session).filter(|h| !h.is_empty()) {
+    /// with no history (seen before 0.8.2 kept it, and not running since) has its last known channel.
+    pub fn channel_at(&self, session: &str, at: &str) -> Option<i64> {
+        let channel = match self.history.get(session).filter(|h| !h.is_empty()) {
             Some(h) => match secs(at) {
                 Some(at) if at < h[0].0 - FIRST_SEEN_GRACE => return None,
                 Some(at) => h.iter().rev().find(|(since, _)| *since <= at).unwrap_or(&h[0]).1,
@@ -114,12 +114,12 @@ impl Seen {
             },
             None => *self.latest.get(session)?,
         };
-        Some(thread).filter(|t| *t > 0)
+        Some(channel).filter(|t| *t > 0)
     }
 }
 
 /// What's known of a page: when it last changed, the sessions that pushed it (the first version's first), and the
-/// thread it was published from (EXT-128).
+/// channel it was published from (EXT-128).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Page {
     pub updated_at: String,
@@ -129,16 +129,16 @@ pub struct Page {
     /// Whether `sessions` is in the versions' order: a page kept before 0.8.2 isn't, so its versions are read again
     /// while it's in the latest list.
     pub ordered: bool,
-    /// The thread of the first session here that pushed it, as that session's agent's run was in (0: not known yet).
-    /// It's set once, so a page's messages stay in its own thread when its agent works elsewhere later.
-    pub thread: i64,
+    /// The channel of the first session here that pushed it, as that session's agent's run was in (0: not known yet).
+    /// It's set once, so a page's messages stay in its own channel when its agent works elsewhere later.
+    pub channel: i64,
 }
 
 impl Page {
     pub fn new(updated_at: &str, sessions: Vec<(String, String)>) -> Page {
         let pushed = sessions.iter().filter(|(_, at)| !at.is_empty()).cloned().collect();
         let sessions = sessions.into_iter().map(|(s, _)| s).collect();
-        Page { updated_at: updated_at.to_string(), sessions, pushed, ordered: true, thread: 0 }
+        Page { updated_at: updated_at.to_string(), sessions, pushed, ordered: true, channel: 0 }
     }
 }
 
@@ -152,16 +152,16 @@ impl Known {
         let pages = v.as_object().into_iter().flatten().filter_map(|(id, p)| {
             let updated_at = p["updated_at"].as_str()?.to_string();
             let sessions = p["sessions"].as_array()?.iter().filter_map(Value::as_str).map(String::from).collect();
-            // `thread` came with the sessions' order: without it, the order isn't known
-            let thread = p["thread"].as_i64();
+            // `channel` came with the sessions' order: without it, the order isn't known
+            let channel = p["thread"].as_i64();
             let pushed = p["pushed"]
                 .as_object()
                 .into_iter()
                 .flatten()
                 .filter_map(|(s, at)| Some((s.clone(), at.as_str()?.to_string())))
                 .collect();
-            let (ordered, thread) = (thread.is_some(), thread.unwrap_or(0));
-            Some((id.clone(), Page { updated_at, sessions, pushed, ordered, thread }))
+            let (ordered, channel) = (channel.is_some(), channel.unwrap_or(0));
+            Some((id.clone(), Page { updated_at, sessions, pushed, ordered, channel }))
         });
         Known(pages.collect())
     }
@@ -173,7 +173,7 @@ impl Known {
             .map(|(id, p)| {
                 let mut page = serde_json::json!({"updated_at": p.updated_at, "sessions": p.sessions});
                 if p.ordered {
-                    page["thread"] = p.thread.into();
+                    page["thread"] = p.channel.into();
                     page["pushed"] = serde_json::json!(p.pushed);
                 }
                 (id.clone(), page)
@@ -204,32 +204,32 @@ impl Known {
         self.0.get(&s.id).is_none_or(|p| p.updated_at != s.updated_at || p.updated_at.is_empty() || !p.ordered)
     }
 
-    /// Its versions read again: its new sessions, the thread it was published from kept.
+    /// Its versions read again: its new sessions, the channel it was published from kept.
     pub fn read(&mut self, s: &Space, sessions: Vec<(String, String)>) {
-        let thread = self.0.get(&s.id).map(|p| p.thread).unwrap_or(0);
-        self.0.insert(s.id.clone(), Page { thread, ..Page::new(&s.updated_at, sessions) });
+        let channel = self.0.get(&s.id).map(|p| p.channel).unwrap_or(0);
+        self.0.insert(s.id.clone(), Page { channel, ..Page::new(&s.updated_at, sessions) });
     }
 
-    /// Each page without its thread yet gets the thread the first session here that pushed it was running in when
-    /// it did ([`Seen::thread_at`]), and none if that isn't known: a later session's thread isn't the page's. The
+    /// Each page without its channel yet gets the channel the first session here that pushed it was running in when
+    /// it did ([`Seen::channel_at`]), and none if that isn't known: a later session's channel isn't the page's. The
     /// pages that got one, with it. A page that gets none, or whose sessions' order isn't known, has its messages go
-    /// to its agent's latest thread, as before 0.8.2.
+    /// to its agent's latest channel, as before 0.8.2.
     pub fn settle(&mut self, seen: &Seen) -> Vec<(String, i64)> {
         let mut settled = Vec::new();
-        for (id, p) in self.0.iter_mut().filter(|(_, p)| p.thread == 0 && p.ordered) {
+        for (id, p) in self.0.iter_mut().filter(|(_, p)| p.channel == 0 && p.ordered) {
             let at = |s: &str| p.pushed.get(s).map(String::as_str).unwrap_or("");
             let first = p.sessions.iter().find(|s| seen.knows(s));
-            if let Some(t) = first.and_then(|s| seen.thread_at(s, at(s))) {
-                p.thread = t;
+            if let Some(t) = first.and_then(|s| seen.channel_at(s, at(s))) {
+                p.channel = t;
                 settled.push((id.clone(), t));
             }
         }
         settled
     }
 
-    /// Each page's thread, where it's known.
-    pub fn threads(&self) -> BTreeMap<String, i64> {
-        self.0.iter().filter(|(_, p)| p.thread > 0).map(|(id, p)| (id.clone(), p.thread)).collect()
+    /// Each page's channel, where it's known.
+    pub fn channels(&self) -> BTreeMap<String, i64> {
+        self.0.iter().filter(|(_, p)| p.channel > 0).map(|(id, p)| (id.clone(), p.channel)).collect()
     }
 
     /// Every session that published one of these pages, the most recently changed page's first, and in each page the
@@ -247,15 +247,15 @@ impl Known {
     }
 }
 
-/// The thread a page's link was first posted in, from core's answer to `GET /v1/node/ext/posts?link=…` (the posts
+/// The channel a page's link was first posted in, from core's answer to `GET /v1/node/ext/posts?link=…` (the posts
 /// that link it, oldest first: EXT-150, EXT-151): the first post not by `robot`, the extension's own robot, whose
-/// relayed messages link the page too and would otherwise keep a wrong first thread. None when no post links it.
-pub fn linked_thread(answer: &Value, robot: &str) -> Option<i64> {
+/// relayed messages link the page too and would otherwise keep a wrong first channel. None when no post links it.
+pub fn linked_channel(answer: &Value, robot: &str) -> Option<i64> {
     answer["posts"]
         .as_array()?
         .iter()
         .filter(|p| p["author"]["handle"].as_str() != Some(robot))
-        .find_map(|p| p["thread_id"].as_i64())
+        .find_map(|p| p["channel_id"].as_i64())
         .filter(|t| *t > 0)
 }
 
@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_pushed_from_the_thread_it_was_running_in_then() {
+    fn a_session_pushed_from_the_channel_it_was_running_in_then() {
         let at = |t: &str| secs(t).unwrap();
         let seen = Seen {
             history: BTreeMap::from([(
@@ -427,23 +427,23 @@ mod tests {
             )]),
             latest: BTreeMap::from([("s-1".to_string(), 25460), ("old".to_string(), 4159), ("none".to_string(), 0)]),
         };
-        assert_eq!(seen.thread_at("s-1", "2026-11-04T08:05:08.589Z"), Some(19090), "where it was then");
-        assert_eq!(seen.thread_at("s-1", "2026-11-04T09:23:38Z"), Some(25460));
+        assert_eq!(seen.channel_at("s-1", "2026-11-04T08:05:08.589Z"), Some(19090), "where it was then");
+        assert_eq!(seen.channel_at("s-1", "2026-11-04T09:23:38Z"), Some(25460));
         assert_eq!(
-            seen.thread_at("s-1", "2026-11-04T07:58:30Z"),
+            seen.channel_at("s-1", "2026-11-04T07:58:30Z"),
             Some(19090),
             "just before it was seen: the first seen"
         );
-        assert_eq!(seen.thread_at("s-1", "2026-11-04T07:50:00Z"), None, "long before it was seen: not known");
-        assert_eq!(seen.thread_at("s-1", ""), Some(19090), "no time: the first seen");
-        assert_eq!(seen.thread_at("old", "2026-11-04T08:05:08Z"), Some(4159), "no history: its last known");
-        assert_eq!(seen.thread_at("none", ""), None);
-        assert_eq!(seen.thread_at("elsewhere", ""), None);
+        assert_eq!(seen.channel_at("s-1", "2026-11-04T07:50:00Z"), None, "long before it was seen: not known");
+        assert_eq!(seen.channel_at("s-1", ""), Some(19090), "no time: the first seen");
+        assert_eq!(seen.channel_at("old", "2026-11-04T08:05:08Z"), Some(4159), "no history: its last known");
+        assert_eq!(seen.channel_at("none", ""), None);
+        assert_eq!(seen.channel_at("elsewhere", ""), None);
         assert!(seen.knows("s-1") && seen.knows("old") && !seen.knows("none") && !seen.knows("elsewhere"));
     }
 
     #[test]
-    fn a_page_keeps_the_thread_it_was_published_from() {
+    fn a_page_keeps_the_channel_it_was_published_from() {
         let seen = |h: Vec<(&str, Vec<(i64, i64)>)>| Seen {
             history: h.into_iter().map(|(s, t)| (s.to_string(), t)).collect(),
             latest: BTreeMap::new(),
@@ -451,25 +451,25 @@ mod tests {
         let p1 = Space { id: "p1".into(), updated_at: "t1".into(), ..Default::default() };
         let pushed = |s: &str, t: i64| (s.to_string(), iso(t));
         let mut known = Known::default();
-        // published by a session on another machine first, then by s-1 here at 100, while it ran in thread 19090
+        // published by a session on another machine first, then by s-1 here at 100, while it ran in channel 19090
         known.read(&p1, vec![pushed("elsewhere", 50), pushed("s-1", 100), pushed("s-2", 300)]);
-        assert_eq!(known.settle(&seen(vec![])), [], "no session's thread known yet");
-        assert_eq!(known.threads(), BTreeMap::new());
+        assert_eq!(known.settle(&seen(vec![])), [], "no session's channel known yet");
+        assert_eq!(known.channels(), BTreeMap::new());
         let moved = vec![(90, 19090), (200, 25460)];
         let settled = known.settle(&seen(vec![("s-1", moved), ("s-2", vec![(290, 25460)])]));
         assert_eq!(settled, [("p1".to_string(), 19090)], "where s-1 ran when it pushed, not where it is now");
-        // a page pushed long before its first session was seen: not pinned, even though a later session's thread is
+        // a page pushed long before its first session was seen: not pinned, even though a later session's channel is
         let p2 = Space { id: "p2".into(), updated_at: "t1".into(), ..Default::default() };
         known.read(&p2, vec![pushed("s-1", 10), pushed("s-2", 300)]);
         assert_eq!(known.settle(&seen(vec![("s-1", vec![(1000, 19090)]), ("s-2", vec![(290, 25460)])])), []);
         known.0.remove("p2");
-        // its agent works in another thread now, and pushes the page again from there: it stays in its own
+        // its agent works in another channel now, and pushes the page again from there: it stays in its own
         known.read(
             &Space { id: "p1".into(), updated_at: "t2".into(), ..Default::default() },
             vec![pushed("s-1", 100), pushed("s-3", 400)],
         );
         assert_eq!(known.settle(&seen(vec![("s-1", vec![(200, 25460)]), ("s-3", vec![(390, 25460)])])), []);
-        assert_eq!(known.threads(), BTreeMap::from([("p1".to_string(), 19090)]));
+        assert_eq!(known.channels(), BTreeMap::from([("p1".to_string(), 19090)]));
         let again = Known::from_json(&known.to_json());
         assert_eq!(again, known);
 
@@ -489,7 +489,7 @@ mod tests {
         assert_eq!(
             old.settle(&latest),
             [("p1".to_string(), 19090)],
-            "a session with no history: its last known thread"
+            "a session with no history: its last known channel"
         );
     }
 
@@ -521,18 +521,18 @@ mod tests {
         assert!(many.0.contains_key("p0000") && !many.0.contains_key(&format!("p{:04}", KEEP_MAX)), "the newest kept");
     }
 
-    /// Core's posts that link a page, oldest first: the first not by the extension's own robot gives the thread.
+    /// Core's posts that link a page, oldest first: the first not by the extension's own robot gives the channel.
     #[test]
-    fn a_pages_linked_thread_is_the_first_post_not_its_own_relay() {
+    fn a_pages_linked_channel_is_the_first_post_not_its_own_relay() {
         let posts = serde_json::json!({"posts": [
-            {"id": "post_1", "thread_id": 4159, "author": {"handle": "spacesheep"}},
-            {"id": "post_2", "thread_id": 49759, "author": {"handle": "loupe"}},
-            {"id": "post_3", "thread_id": 37227, "author": {"handle": "james"}}]});
-        assert_eq!(linked_thread(&posts, "spacesheep"), Some(49759));
-        assert_eq!(linked_thread(&serde_json::json!({"posts": []}), "spacesheep"), None);
-        let own = serde_json::json!({"posts": [{"thread_id": 4159, "author": {"handle": "spacesheep"}}]});
-        assert_eq!(linked_thread(&own, "spacesheep"), None, "only its own relays: none");
-        assert_eq!(linked_thread(&serde_json::json!({"posts": [{"thread_id": 0}]}), "spacesheep"), None);
-        assert_eq!(linked_thread(&serde_json::json!({"error": {}}), "spacesheep"), None);
+            {"id": "post_1", "channel_id": 4159, "author": {"handle": "spacesheep"}},
+            {"id": "post_2", "channel_id": 49759, "author": {"handle": "loupe"}},
+            {"id": "post_3", "channel_id": 37227, "author": {"handle": "james"}}]});
+        assert_eq!(linked_channel(&posts, "spacesheep"), Some(49759));
+        assert_eq!(linked_channel(&serde_json::json!({"posts": []}), "spacesheep"), None);
+        let own = serde_json::json!({"posts": [{"channel_id": 4159, "author": {"handle": "spacesheep"}}]});
+        assert_eq!(linked_channel(&own, "spacesheep"), None, "only its own relays: none");
+        assert_eq!(linked_channel(&serde_json::json!({"posts": [{"channel_id": 0}]}), "spacesheep"), None);
+        assert_eq!(linked_channel(&serde_json::json!({"error": {}}), "spacesheep"), None);
     }
 }
