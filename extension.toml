@@ -9,7 +9,7 @@
 # Talk (Pointman thread 6914; the spec: https://spacesheep.dev/@james/spacesheep-talk-through-the-pointman-node): a
 # page's Session tab on spacesheep.dev messages the agent session that published it. While the account's Talk switch
 # is on, the process runs `spacesheep talk listen --session <id>` for each agent here whose session published a page,
-# and posts each message in the page's thread (the one it was published from), which wakes the agent: or wakes the
+# and posts each message in the page's channel (the one it was published from), which wakes the agent: or wakes the
 # agents the message starts by calling (`@editor …`), James's call in thread 6914 [16235]. The agent answers there,
 # and on the page with `spacesheep talk reply`. The node names no extension: its `agents.sessions` and `board.post` are generic. Nothing
 # changes on Spacesheep's side, and nothing goes into ~/.claude.
@@ -17,10 +17,10 @@
 [extension]
 id = "spacesheep"
 name = "Spacesheep"
-version = "0.9.7"
+version = "0.10.0"
 publisher = "aurelio"
 summary = "Publish pages and sites to Spacesheep from any agent, with its CLI, and talk to an agent from its page's Session tab."
-node = ">=0.4,<1"
+node = ">=0.5.0,<1"
 platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64", "linux-arm64"]
 # its robot account's face (@spacesheep, Pointman's EXT-85): the Spacesheep sheep
 avatar = "avatar.png"
@@ -36,9 +36,9 @@ files = ["references"]           # how to write a page (pages.md), its checker (
 [permissions]
 rules = ["Bash(spacesheep:*)", "Bash(npx -y spacesheep@latest:*)"]
 network = true                   # spacesheep.dev, through its CLI
-agents = true                    # agents.sessions: each agent's session and latest thread
-post = true                      # board.post: each message, as a post in the agent's thread
-read = true                      # core.call GET /v1/node/ext/posts: the thread a page's link was first posted in
+agents = true                    # agents.sessions: each agent's session and latest channel
+post = true                      # board.post: each message, as a post in the agent's channel
+read = true                      # core.call GET /v1/node/ext/posts: the channel a page's link was first posted in
 secrets = ["spacesheep.key"]     # the API key that signs each node in (EXT-132); only ever in the CLI's environment
 
 [[credentials]]

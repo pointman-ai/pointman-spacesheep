@@ -347,8 +347,8 @@ pub fn alive(pid: i32) -> bool {
 }
 
 /// An agent as `agents.sessions` gives it (an AgentSessionOnMachine, in standard JSON).
-pub fn agent(handle: &str, session: &str, thread: i64) -> Value {
-    json!({"agent": {"name": handle}, "client": "claude", "sessionId": session, "thread": {"id": format!("thr_{thread}")}})
+pub fn agent(handle: &str, session: &str, channel: i64) -> Value {
+    json!({"agent": {"name": handle}, "client": "claude", "sessionId": session, "channel": {"id": format!("ch_{channel}")}})
 }
 
 /// The node's side: the agents it says, each post made, and what core says of the posts that link a page.
@@ -428,9 +428,9 @@ pub fn spacesheep_on(path_var: &str, board: &Board, settings: Value) -> StandIn 
         })
         .on(move |post: BoardPostRequest| {
             let mut posts = posts.lock().unwrap();
-            // each post as the tests read it: its thread's number and its text
-            let thread = post.thread.as_option().and_then(|t| t.id.strip_prefix("thr_")?.parse::<i64>().ok());
-            posts.push(json!({"thread_id": thread, "text": post.text, "blocks": post.blocks, "links": post.links}));
+            // each post as the tests read it: its channel's number and its text
+            let channel = post.channel.as_option().and_then(|t| t.id.strip_prefix("ch_")?.parse::<i64>().ok());
+            posts.push(json!({"channel_id": channel, "text": post.text, "blocks": post.blocks, "links": post.links}));
             let id = PostRef { id: format!("post_{}", 1000 + posts.len()), ..Default::default() };
             Ok(BoardPostResponse { post: id.into(), ..Default::default() })
         })
